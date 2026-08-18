@@ -43,7 +43,7 @@ Open one folder. Each notebook is self-contained.
 
 | Folder | Models | Endpoint | API | What the notebooks cover |
 |---|---|---|---|---|
-| [`01-openai-gpt/`](01-openai-gpt/) | gpt-5.6 sol/terra/luna, gpt-5.5, gpt-5.4 · gpt-oss 20b/120b · gpt-oss-safeguard | gpt-5.6 **both** · earlier gpt-5.x mantle · gpt-oss both | Responses · Converse | Core inference · **web search** · tools & strict JSON · prompt caching · server-side Lambda tools & fine-tuning · **runtime via inference profile** |
+| [`01-openai-gpt/`](01-openai-gpt/) | gpt-5.6 sol/terra/luna, gpt-5.5, gpt-5.4 · gpt-oss 20b/120b · gpt-oss-safeguard | gpt-5.6 **both** · earlier gpt-5.x mantle · gpt-oss both | Responses · Chat Completions · Converse | Core inference · **web search** · tools & strict JSON · prompt caching · server-side Lambda tools & fine-tuning · **runtime via inference profile** |
 | [`02-anthropic-claude/`](02-anthropic-claude/) | opus-5, sonnet-5, opus-4-8, opus-4-7, haiku-4-5, fable-5 | both | Messages | Core inference · adaptive thinking, tool loops, caching · computer use, memory, compaction |
 | [`03-google-gemma/`](03-google-gemma/) | gemma-4 31b · 26b-a4b · e2b · gemma-3 4b · 12b · 27b | gemma 4 **mantle** · gemma 3 both | gemma 4 Responses · gemma 3 Chat Completions | Gemma 4 end to end · Gemma 3 on both endpoints, and why the two generations share almost nothing |
 | [`04-qwen/`](04-qwen/) | qwen3 32b/235b/next-80b, coder 30b/480b/next, vl-235b | both | Chat Completions | Core inference & tools · coding models & vision |

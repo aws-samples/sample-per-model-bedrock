@@ -16,11 +16,17 @@ elided where it would obscure the point.
 ## Why per-model
 
 Bedrock model behaviour is not uniform, and the differences are the part that costs
-you time. Gemma 4 pins `temperature` to its default and rejects `top_p`. Grok takes
+you time. GPT-5.6 pins `temperature` to its default, rejects `top_p`, and takes
 `max_completion_tokens` where the `/v1` families take `max_tokens`. Palmyra Vision has
-no tool support at all. Most Claude models must be addressed through a cross-Region
-inference profile and are rejected by their bare model ID. None of that is discoverable
-from a generic example, so each family gets its own notebook rather than a shared one.
+no usable tool support at all. Most Claude models must be addressed through a
+cross-Region inference profile and are rejected by their bare model ID. Newer Claude
+models reject `temperature` as deprecated. None of that is discoverable from a generic
+example, so each family gets its own notebook rather than a shared one.
+
+It also moves. Gemma 4's parameter surface tightened in August 2026 and was later
+relaxed again; Grok's did the same. Every notebook therefore **probes** the endpoint in
+front of you rather than reprinting a table from the day it was written, and where a
+table does appear it is labelled as a snapshot.
 
 ## Two endpoints, and which to use
 
@@ -31,6 +37,8 @@ per-model fact, not a preference.**
 |---|---|---|
 | APIs | Converse, InvokeModel | OpenAI Responses, OpenAI Chat Completions, Anthropic Messages |
 | Auth | SigV4 via the AWS SDK | Bearer token (short-term Bedrock API key) |
+| Guardrails | `guardrailConfig` on Converse, `guardrailIdentifier` on InvokeModel | **not supported** — screen text yourself with `ApplyGuardrail` |
+| Cross-Region inference | geographic and global profiles | in-Region only |
 | Reach for it when | you want one AWS-native shape across providers, or need Converse-only features | you have existing OpenAI- or Anthropic-shaped code to move |
 
 Some models are on both, some on only one. Every family table below names the
@@ -45,7 +53,7 @@ Open one folder. Each notebook is self-contained.
 |---|---|---|---|---|
 | [`01-openai-gpt/`](01-openai-gpt/) | gpt-5.6 sol/terra/luna, gpt-5.5, gpt-5.4 · gpt-oss 20b/120b · gpt-oss-safeguard | gpt-5.6 **both** · earlier gpt-5.x mantle · gpt-oss both | Responses · Chat Completions · Converse | Core inference · **web search** · tools & strict JSON · prompt caching · server-side Lambda tools & fine-tuning · **runtime via inference profile** |
 | [`02-anthropic-claude/`](02-anthropic-claude/) | opus-5, sonnet-5, opus-4-8, opus-4-7, haiku-4-5, fable-5 | both | Messages | Core inference · adaptive thinking, tool loops, caching · computer use, memory, compaction |
-| [`03-google-gemma/`](03-google-gemma/) | gemma-4 31b · 26b-a4b · e2b · gemma-3 4b · 12b · 27b | gemma 4 **mantle** · gemma 3 both | gemma 4 Responses · gemma 3 Chat Completions | Gemma 4 end to end · Gemma 3 on both endpoints, and why the two generations share almost nothing |
+| [`03-google-gemma/`](03-google-gemma/) | gemma-4 31b · 26b-a4b · e2b · gemma-3 4b · 12b · 27b | gemma 4 **mantle** · gemma 3 both | gemma 4 Responses **and** Chat Completions · gemma 3 Chat Completions | Gemma 4 end to end · Gemma 3 on both endpoints, and why the two generations share almost nothing |
 | [`04-qwen/`](04-qwen/) | qwen3 32b/235b/next-80b, coder 30b/480b/next, vl-235b | both | Chat Completions | Core inference & tools · coding models & vision |
 | [`05-deepseek/`](05-deepseek/) | v3.2, v3.1 | both · v3.1 **mantle** | Chat Completions | Core inference, reasoning effort, tools, structured output |
 | [`06-zai-glm/`](06-zai-glm/) | glm-5, glm-4.7, glm-4.7-flash, glm-4.6 | both · 4.6 **mantle** | Chat Completions | Core inference plus cost-aware routing across the size ladder |
@@ -53,7 +61,7 @@ Open one folder. Each notebook is self-contained.
 | [`08-moonshot-kimi/`](08-moonshot-kimi/) | kimi-k2.5, kimi-k2-thinking | both | Chat Completions | Core inference, long context, agentic patterns |
 | [`09-minimax/`](09-minimax/) | minimax-m2.5, m2.1, m2 | both | Chat Completions | Core inference plus a version-migration test across three generations |
 | [`10-nvidia-nemotron/`](10-nvidia-nemotron/) | nemotron-super-3-120b, nano 9b/12b/30b | both | Chat Completions | Core inference across the cost/quality curve |
-| [`11-xai-grok/`](11-xai-grok/) | grok-4.3 | **mantle** | Responses | Core inference, always-on reasoning, encrypted reasoning content |
+| [`11-xai-grok/`](11-xai-grok/) | grok-4.3 | **mantle** | Responses **and** Chat Completions | Core inference, always-on reasoning, encrypted reasoning content |
 | [`12-writer-palmyra/`](12-writer-palmyra/) | palmyra-vision-7b · palmyra-x4 · palmyra-x5 | vision both · x4/x5 **runtime** | Chat Completions · Converse | Vision, and working around a model with no tool support · the text models, which need an inference profile |
 | [`13-amazon-nova/`](13-amazon-nova/) | nova-micro · nova-lite · nova-pro | **runtime** | Converse | Tier selection graded on a checkable task · vision on lite/pro · what a provider-deprecated model looks like |
 | [`14-openai-gpt-oss/`](14-openai-gpt-oss/) | gpt-oss 20b/120b · gpt-oss-safeguard 20b/120b | both | Chat Completions · Converse | Where the reasoning trace lives on each endpoint · policy classification graded on a labelled set |
@@ -69,6 +77,15 @@ For the same reason the notebooks state which models, Regions and features they
 *cover*, and probe anything that varies rather than asserting what is unavailable
 where. A committed table is evidence of one run, not a specification.
 
+**Where a cell reaches a conclusion, the conclusion is computed from that cell's own
+results** rather than written alongside them. That is deliberate, and it is the
+single most useful convention here: a paragraph that asserts "this model rejects
+`top_p`" is wrong the moment the service changes, and it has been — Gemma 4's
+parameter surface tightened in August 2026 and was relaxed again weeks later. A
+derived verdict cannot contradict the table above it. When you re-run a notebook and
+its summary line reads differently from the committed one, that is the design
+working, not a defect.
+
 **Read [`00-foundations/`](00-foundations/) first if you are new to Bedrock** — auth,
 endpoints, quotas and governance apply to every family:
 
@@ -81,7 +98,10 @@ endpoints, quotas and governance apply to every family:
 
 Choosing between families, or already have OpenAI code?
 [`99-cross-cutting/`](99-cross-cutting/) has a live capability survey, a migration
-guide, and a pre-launch checklist.
+guide with a self-healing compatibility shim, and a pre-launch checklist that covers
+**Guardrails** — including why they are not a `bedrock-mantle` parameter and why the
+header that looks like it should work on the OpenAI APIs is accepted and silently
+ignored.
 
 ## The one shared file
 

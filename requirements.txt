@@ -19,6 +19,12 @@ aws-bedrock-token-generator==1.1.0
 boto3==1.43.59
 botocore==1.43.59
 
+# Used by 01-openai-gpt/01 to POST SigV4-signed OpenAI-shaped payloads to
+# bedrock-runtime, and to stream the reply. It arrives transitively with
+# jupyterlab, but it is pinned explicitly because the notebook code is meant to be
+# usable outside a notebook, where that transitive path does not exist.
+requests==2.34.2
+
 # Notebook runtime. jupyterlab pulls in the nbformat/nbclient stack.
 jupyterlab==4.6.2
 ipykernel==7.3.0

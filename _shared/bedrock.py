@@ -410,7 +410,10 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
 # Raw HTTP with retries - used where the SDKs don't reach (control plane,
 # Anthropic beta headers, deliberately-invalid requests that must show a 400).
 # ---------------------------------------------------------------------------
-_TRANSIENT = {429, 500, 502, 503, 504}
+# 529 is Anthropic's "overloaded" status: transient by definition, and returned by
+# the Messages API under load. It is outside the usual 5xx set, so a policy that
+# only knows 500-504 gives up on a retryable blip.
+_TRANSIENT = {429, 500, 502, 503, 504, 529}
 
 # Observed behaviour: mantle sometimes reports a SERVER fault with a 4xx status and
 # the body "Internal server error". Status alone therefore misclassifies it as a

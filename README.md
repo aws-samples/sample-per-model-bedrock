@@ -39,7 +39,9 @@ response = runtime.converse(
 print("".join(b["text"] for b in response["output"]["message"]["content"] if "text" in b))
 ```
 
-**The OpenAI-shaped APIs**, which need a bearer token rather than SigV4:
+**The OpenAI-shaped APIs.** Both endpoints accept SigV4 *or* a Bedrock API key on
+these paths — but the OpenAI SDK can only send a bearer token, so mint a short-term
+key from the same credentials:
 
 ```python
 from aws_bedrock_token_generator import provide_token

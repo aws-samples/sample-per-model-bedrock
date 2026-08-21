@@ -5,16 +5,26 @@ Import from a notebook with:
     import sys; sys.path.insert(0, "../_shared")
     from bedrock import client, base_url, post, converse, resolve_runtime_id
 
-Amazon Bedrock serves models through two inference endpoints, and which one you
-use is a per-model fact, not a preference:
+Amazon Bedrock serves models through two inference endpoints. AWS recommends
+`bedrock-runtime` for new applications, and since August 2026 it speaks all five
+APIs:
 
-    bedrock-mantle    OpenAI Responses / OpenAI Chat Completions / Anthropic
-                      Messages. Bearer-token auth. Helpers: client(), post().
-    bedrock-runtime   Converse and InvokeModel via the AWS SDK. SigV4 auth.
-                      Helpers: runtime_client(), converse().
+    bedrock-runtime   InvokeModel / Converse via the AWS SDK, plus the
+                      OpenAI-compatible Responses and Chat Completions APIs and
+                      the Anthropic Messages API on its /openai/v1 and
+                      /anthropic/v1 paths. SigV4 *or* a Bedrock API key.
+                      Helpers: runtime_client(), converse(), runtime_post(),
+                      runtime_openai_client().
+    bedrock-mantle    Responses / Chat Completions / Messages. Adds server-side
+                      tool use, asynchronous inference (background=true), and
+                      Projects and Workspaces. Helpers: client(), post().
 
-Some models are on both, some on only one. `endpoints_for()` answers that, and
-each family's notebook says which endpoint to prefer and why.
+Which endpoint serves a given model is a per-model fact, not a preference, and
+so is the URL path and even the model ID — the same model can be
+`openai.gpt-oss-20b` on mantle and `openai.gpt-oss-20b-1:0` on runtime.
+`endpoints_for()` answers the first question, `api_prefix()` the second and
+`runtime_id_for()` the third. Each family's notebook states the answer for its
+own models and shows the working.
 
 Everything here is deliberately small and dependency-light: the notebooks are the
 teaching material, this file only removes repetition.
@@ -43,23 +53,48 @@ import urllib.request
 DEFAULT_REGION = "us-east-1"
 
 # ---------------------------------------------------------------------------
-# The three path families on bedrock-mantle.
+# URL paths, which are per-endpoint as well as per-model.
 #
-#   /openai/v1/*        google gemma-4, openai gpt-5.x, xai grok
+# bedrock-mantle has three families:
+#   /openai/v1/*        google gemma-4, openai gpt-5.x, xai
 #   /v1/*               openai gpt-oss + every Chat-Completions-only family
 #   /anthropic/v1/*     anthropic claude only
 #
+# bedrock-runtime has TWO, and the split falls in a different place:
+#   /openai/v1/*        every OpenAI-compatible model, gpt-oss and qwen included
+#   /anthropic/v1/*     anthropic claude only
+#
+# So the same model can live on different paths depending on the endpoint:
+# `openai.gpt-oss-20b` is /v1 on mantle, and its runtime twin
+# `openai.gpt-oss-20b-1:0` is /openai/v1. There is no /v1 inference surface on
+# bedrock-runtime at all -- see unknown_op() for what asking for one looks like.
+#
 # Control-plane paths (models, files, projects, fine-tuning, data retention)
-# always live under /v1/*, never /openai/v1/*.
+# live under mantle's /v1/*, never /openai/v1/*.
 # ---------------------------------------------------------------------------
 _OPENAI_PREFIX_FAMILIES = ("google.gemma-4", "openai.gpt-5", "xai.")
 
 
-def api_prefix(model_id: str) -> str:
-    """Return "/openai/v1" or "/v1" for a model's inference paths."""
-    if model_id.startswith("anthropic."):
+def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
+    """Return the URL prefix serving this model's inference APIs.
+
+    `endpoint` is "mantle" or "runtime" and it changes the answer:
+
+        api_prefix("openai.gpt-oss-20b")                 -> "/v1"
+        api_prefix("openai.gpt-oss-20b-1:0", "runtime")  -> "/openai/v1"
+
+    Verified against both endpoints in us-east-1 on 2026-08-20.
+    """
+    if endpoint not in ("mantle", "runtime"):
+        raise ValueError(f"endpoint must be 'mantle' or 'runtime', got {endpoint!r}")
+    # A geo/global inference-profile prefix is not part of the family name.
+    bare = re.sub(r"^(us|eu|apac|global|in)\.", "", model_id)
+    if bare.startswith("anthropic."):
         return "/anthropic/v1"
-    if any(model_id.startswith(p) for p in _OPENAI_PREFIX_FAMILIES):
+    if endpoint == "runtime":
+        # Runtime serves every OpenAI-compatible model on /openai/v1.
+        return "/openai/v1"
+    if any(bare.startswith(p) for p in _OPENAI_PREFIX_FAMILIES):
         return "/openai/v1"
     return "/v1"
 
@@ -69,9 +104,19 @@ def host(region: str = DEFAULT_REGION) -> str:
     return f"https://bedrock-mantle.{region}.api.aws"
 
 
+def runtime_host(region: str = DEFAULT_REGION) -> str:
+    """Return the regional bedrock-runtime endpoint origin (scheme + host)."""
+    return f"https://bedrock-runtime.{region}.amazonaws.com"
+
+
 def base_url(model_id: str, region: str = DEFAULT_REGION) -> str:
-    """Base URL to hand to the OpenAI SDK for this model."""
+    """Base URL to hand to the OpenAI SDK for this model, on bedrock-mantle."""
     return host(region) + api_prefix(model_id)
+
+
+def runtime_base_url(model_id: str, region: str = DEFAULT_REGION) -> str:
+    """Base URL to hand to the OpenAI SDK for this model, on bedrock-runtime."""
+    return runtime_host(region) + api_prefix(model_id, "runtime")
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +146,32 @@ def anthropic_client(region: str = DEFAULT_REGION):
 
     return anthropic.Anthropic(
         api_key=token(region), base_url=host(region) + "/anthropic"
+    )
+
+
+def runtime_openai_client(model_id: str, region: str = DEFAULT_REGION):
+    """An OpenAI SDK client pointed at bedrock-runtime's OpenAI-compatible paths.
+
+    The endpoint AWS recommends for new applications. Remember that runtime wants
+    its own model ID, which is often not mantle's - runtime_id_for() maps it.
+    """
+    from openai import OpenAI
+
+    return OpenAI(
+        api_key=token(region), base_url=runtime_base_url(model_id, region)
+    )
+
+
+def runtime_anthropic_client(region: str = DEFAULT_REGION):
+    """An Anthropic SDK client pointed at bedrock-runtime's /anthropic path.
+
+    Name a `us.` or `global.` inference profile as the model; the bare Claude ID
+    is rejected here.
+    """
+    import anthropic
+
+    return anthropic.Anthropic(
+        api_key=token(region), base_url=runtime_host(region) + "/anthropic"
     )
 
 
@@ -346,13 +417,22 @@ def converse_reasoning(response: dict) -> str:
     return "".join(parts)
 
 
+_RUNTIME_CATALOGUE_CACHE: dict[str, dict[str, dict]] = {}
+
+
 def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
     """Serverless bedrock-runtime catalogue, keyed by model ID without the version.
 
     Each value carries {"in", "out", "infer", "provider"}. Used by the
     endpoint-availability tables in the notebooks so the claims come from the
     service rather than from a hand-maintained list that ages.
+
+    Cached per Region, like inference_profiles(). ListFoundationModels changes only
+    when AWS adds a model, and runtime_id_for() calls this once per lookup - an
+    uncached version turns a 40-model table into 40 control-plane calls.
     """
+    if region in _RUNTIME_CATALOGUE_CACHE:
+        return _RUNTIME_CATALOGUE_CACHE[region]
     out: dict[str, dict] = {}
     try:
         summaries = control_client(region).list_foundation_models()
@@ -376,7 +456,42 @@ def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
         entry["in"].update(summary.get("inputModalities", []))
         entry["out"].update(summary.get("outputModalities", []))
         entry["infer"].update(summary.get("inferenceTypesSupported", []))
+    _RUNTIME_CATALOGUE_CACHE[region] = out
     return out
+
+
+def _norm_model_key(value: str) -> str:
+    """Normalise a model ID so the two endpoints' catalogues can be compared.
+
+    The same model is named differently on each endpoint, in four ways that all
+    show up in us-east-1 today:
+
+        version suffix     openai.gpt-oss-20b   vs  openai.gpt-oss-20b-1:0
+        -v1:0 suffix       qwen.qwen3-32b       vs  qwen.qwen3-32b-v1:0
+        provider prefix    moonshotai.kimi-...  vs  moonshot.kimi-...
+        "-instruct" tail   qwen.qwen3-next-80b-a3b-instruct vs ...-a3b
+
+    The delicate part is the trailing "-1" in `openai.gpt-oss-20b-1:0`, which is a
+    version and must go. Stripping ANY trailing "-<digit>" is what an earlier
+    version of this function did, and it silently mapped
+    `anthropic.claude-sonnet-5` onto `anthropic.claude-sonnet-4-...` because both
+    collapsed to `anthropic.claude-sonnet`. Model generations live in those digits.
+
+    So the trailing "-<digit>" is only removed when it looks like a *version*: the
+    ID carried a ":<n>" suffix and no embedded release date. `claude-sonnet-4-2025
+    0514-v1:0` has the date, so its "-4" is kept; `gpt-oss-20b-1:0` has no date, so
+    its "-1" goes.
+    """
+    value = re.sub(r"^(us|eu|apac|global|in)\.", "", value)
+    had_version_suffix = ":" in value
+    value = value.split(":")[0]
+    value = re.sub(r"-v\d+$", "", value)
+    dated = re.search(r"-\d{8}$", value) is not None
+    value = re.sub(r"-\d{8}$", "", value)
+    value = value.replace("moonshotai.", "moonshot.").replace("-instruct", "")
+    if had_version_suffix and not dated:
+        value = re.sub(r"-\d$", "", value)
+    return value.lower()
 
 
 def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool]:
@@ -386,24 +501,64 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
     DIFFERENT IDs on the two endpoints - `openai.gpt-oss-120b` on mantle is
     `openai.gpt-oss-120b-1` on runtime - so this compares on a normalised key.
     """
-
-    def _norm(value: str) -> str:
-        value = value.split(":")[0]
-        value = re.sub(r"-v\d+$", "", value)
-        value = re.sub(r"-\d{8}$", "", value)
-        value = value.replace("moonshotai.", "moonshot.").replace("-instruct", "")
-        return re.sub(r"-\d$", "", value.lower())
-
-    target = _norm(model_id)
+    target = _norm_model_key(model_id)
     try:
-        on_mantle = any(_norm(m) == target for m in list_models(region))
+        on_mantle = any(_norm_model_key(m) == target for m in list_models(region))
     except Exception:
         on_mantle = False
     try:
-        on_runtime = any(_norm(m) == target for m in runtime_models(region))
+        on_runtime = any(_norm_model_key(m) == target for m in runtime_models(region))
     except Exception:
         on_runtime = False
     return {"mantle": on_mantle, "runtime": on_runtime}
+
+
+def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
+    """The ID bedrock-runtime wants for the model you named, or None.
+
+    Pass a mantle model ID and get back the runtime form, including the geo
+    inference-profile prefix when the model requires one:
+
+        openai.gpt-oss-20b         -> openai.gpt-oss-20b-1:0
+        qwen.qwen3-32b             -> qwen.qwen3-32b-v1:0
+        moonshotai.kimi-k2.5       -> moonshotai.kimi-k2.5
+        anthropic.claude-opus-5    -> us.anthropic.claude-opus-5
+        google.gemma-4-31b         -> None  (mantle only)
+
+    Returns None when the model is not on runtime at all, so callers get an
+    explicit "not there" rather than a guessed ID that 400s later.
+
+    Caveat worth knowing: this answers for Converse, InvokeModel and the
+    /openai/v1 paths. The /anthropic/v1/messages surface is stricter - it serves
+    only the Claude models whose inference profile carries no date, so
+    `us.anthropic.claude-haiku-4-5-20251001-v1:0` works on Converse and returns
+    404 on Messages. 00-foundations/04 probes that difference rather than
+    encoding it here, because it is the kind of fact that moves.
+    """
+    try:
+        catalogue = runtime_models(region)
+    except Exception:
+        return None
+
+    def _addressable(entry: dict) -> str:
+        if "ON_DEMAND" in entry["infer"]:
+            return entry["id"]
+        # INFERENCE_PROFILE-only: the bare ID is refused outright.
+        return resolve_runtime_id(entry["id"], region)
+
+    bare = re.sub(r"^(us|eu|apac|global|in)\.", "", model_id)
+
+    # Exact first. Normalisation is lossy by design, so trying it before an exact
+    # match is how `anthropic.claude-sonnet-5` once resolved to sonnet-4.
+    for entry in catalogue.values():
+        if entry["id"] == bare or entry["id"].split(":")[0] == bare:
+            return _addressable(entry)
+
+    target = _norm_model_key(model_id)
+    for entry in catalogue.values():
+        if _norm_model_key(entry["id"]) == target:
+            return _addressable(entry)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +627,84 @@ def post(
     (unsupported parameter, unknown model) still fails on the first attempt.
     """
     url = host(region) + path
+    data = json.dumps(body).encode() if body is not None else None
+    for attempt in range(attempts):
+        hdrs = {
+            "Authorization": f"Bearer {token(region)}",
+            "Content-Type": "application/json",
+        }
+        if headers:
+            hdrs.update(headers)
+        req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+        try:
+            with _open_https(req, timeout) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+                return resp.status, (json.loads(raw) if raw.strip() else {})
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                parsed = {"raw": raw[:500]}
+            if _is_retryable(e.code, parsed) and attempt < attempts - 1:
+                # Retry jitter, not a security decision.
+                time.sleep(
+                    min(2**attempt, 16) + random.random()  # nosec B311  # noqa: S311
+                )
+                continue
+            return e.code, parsed
+        except Exception as e:  # timeouts, connection resets
+            if attempt < attempts - 1:
+                # Retry jitter, not a security decision.
+                time.sleep(
+                    min(2**attempt, 16) + random.random()  # nosec B311  # noqa: S311
+                )
+                continue
+            return -1, {"error": {"message": f"{type(e).__name__}: {e}"}}
+    return -1, {"error": {"message": "retries exhausted"}}
+
+
+# ---------------------------------------------------------------------------
+# The HTTP-200 trap on bedrock-runtime
+#
+# Ask bedrock-runtime for a path it does not serve and it answers 200 OK with a
+# Coral fault in the body:
+#
+#   {"Output":{"__type":"com.amazon.coral.service#UnknownOperationException"},
+#    "Version":"1.0"}
+#
+# So `if resp.status_code == 200:` reads a missing route as a success. This is not
+# hypothetical: the Chat Completions user-guide page shows a runtime base URL of
+# ".../v1" (rather than ".../openai/v1"), and that URL produces exactly this body
+# for every model ID we tried. Check the body, not only the status.
+# ---------------------------------------------------------------------------
+def unknown_op(payload: dict) -> bool:
+    """True when a body is a Coral UnknownOperationException, whatever the status."""
+    return "UnknownOperation" in json.dumps(payload)[:400]
+
+
+def ok(status: int, payload: dict) -> bool:
+    """True for a real success: 200 AND not a Coral fault wearing a 200."""
+    return status == 200 and not unknown_op(payload)
+
+
+def runtime_post(
+    path: str,
+    body: dict | None,
+    *,
+    region: str = DEFAULT_REGION,
+    headers: dict | None = None,
+    method: str = "POST",
+    attempts: int = 5,
+    timeout: int = 240,
+) -> tuple[int, dict]:
+    """Like post(), but against bedrock-runtime's /openai/v1 and /anthropic/v1.
+
+    Bearer-token auth, so it works with a Bedrock API key exactly as the OpenAI
+    SDK does. Never raises: returns (status, body). Pair it with ok() rather than
+    testing the status alone - see the note above on UnknownOperationException.
+    """
+    url = runtime_host(region) + path
     data = json.dumps(body).encode() if body is not None else None
     for attempt in range(attempts):
         hdrs = {
@@ -836,6 +1069,7 @@ def ttft(
     region: str = DEFAULT_REGION,
     headers: dict | None = None,
     timeout: int = 120,
+    deadline_s: float = 180.0,
 ) -> dict:
     """Time a streaming call: time-to-first-token and output frames/sec.
 
@@ -845,6 +1079,13 @@ def ttft(
     Never raises: a request that a model rejects (e.g. an unsupported
     service_tier) or that stalls returns an "error" key instead, so a
     benchmarking loop over many models/tiers always completes.
+
+    `timeout` is urllib's, which applies PER SOCKET OPERATION, not to the whole
+    call - a stream that keeps dribbling bytes can therefore run far past it.
+    `deadline_s` is the total wall-clock cap and it is the one that actually
+    bounds this function. Without it, a `service_tier="flex"` request that sits
+    queued can hang a notebook cell indefinitely: one did, for 1500s, which
+    aborted a full run.
     """
     body = {**body, "stream": True}
     start = time.perf_counter()
@@ -854,6 +1095,14 @@ def ttft(
         for line in stream_lines(
             path, body, region=region, headers=headers, timeout=timeout
         ):
+            if time.perf_counter() - start > deadline_s:
+                return {
+                    "ttft_s": round(first or 0, 3),
+                    "total_s": round(time.perf_counter() - start, 3),
+                    "frames": frames,
+                    "frames_per_s": 0.0,
+                    "error": f"exceeded {deadline_s}s wall clock",
+                }
             if not line.startswith("data:"):
                 continue
             if line.strip() == "data: [DONE]":

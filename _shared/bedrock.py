@@ -507,7 +507,18 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
     except Exception:
         on_mantle = False
     try:
-        on_runtime = any(_norm_model_key(m) == target for m in runtime_models(region))
+        # Compare against entry["id"], NOT the dict key. runtime_models() keys off
+        # modelId.split(":")[0], so the key for `openai.gpt-oss-20b-1:0` is
+        # `openai.gpt-oss-20b-1` -- the version marker is already gone, and
+        # _norm_model_key can no longer tell the trailing "-1" is a version. This
+        # function iterated the keys and therefore reported gpt-oss as absent from
+        # bedrock-runtime while runtime_id_for(), which uses entry["id"], mapped it
+        # correctly. Two helpers disagreeing about one model is how a wrong row
+        # reaches a table.
+        on_runtime = any(
+            _norm_model_key(entry["id"]) == target
+            for entry in runtime_models(region).values()
+        )
     except Exception:
         on_runtime = False
     return {"mantle": on_mantle, "runtime": on_runtime}

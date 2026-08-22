@@ -43,12 +43,15 @@ The stdlib imports below follow the normal convention.
 from __future__ import annotations
 
 import ast
+import base64
 import json
+import os
 import random  # retry jitter only -- never for tokens, keys, or nonces
 import re
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 
 DEFAULT_REGION = "us-east-1"
 
@@ -347,54 +350,99 @@ def converse_tool_uses(response: dict) -> list[dict]:
     return [b["toolUse"] for b in blocks if "toolUse" in b]
 
 
-def bands_png(
-    bands: list[tuple[int, int, int]], width: int = 120, band_height: int = 40
-) -> bytes:
-    """A PNG of solid horizontal colour bands, built with the standard library.
+# --------------------------------------------------------------------------
+# Sample media.
+#
+# Vision and audio cells need an input. These two files are excerpts from a
+# public AWS talk, "AWS Summit Online ASEAN re:Cap 2020 | AI/ML: Cost-optimise
+# Your Machine Learning Pipeline (L300)" (AWS Events, 17 Nov 2020), presented by
+# the author of this repository:
+#
+#     https://www.youtube.com/watch?v=YjFI-n2YC7M
+#
+# An earlier version of this module generated solid colour bands instead. That
+# kept the repository free of binaries, but it could only ever test plumbing: a
+# model naming a colour does not show that OCR works, and there is no way to
+# synthesise intelligible speech from the standard library, so the audio cell
+# sent silence and could only check that the request shape was accepted.
+#
+# Real excerpts give each cell a KNOWN ANSWER that is worth checking:
+#
+#     slide  ->  a labelled architecture diagram, so "read the title" and "quote
+#                the callouts" are real OCR questions with verifiable answers
+#     clip   ->  seven seconds of speech, so "transcribe this" is a real
+#                transcription question with a verifiable answer
+#
+# Both are deliberately small (together under 64 KB) and are committed rather
+# than fetched, so the notebooks still run offline and the input cannot change
+# underneath a cell.
+# --------------------------------------------------------------------------
 
-    Vision samples need an input image, and every obvious way of getting one is
-    worse than generating it:
+_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
-        committing a binary   adds an image to a repository that otherwise has
-                              none, and the reader cannot tell what it depicts
-        fetching a URL        breaks offline, and the image can change under you
-        generating with a
-        text-to-image model   costs money per run and couples this notebook to a
-                              second model being available
+SLIDE_PATH = os.path.join(_ASSETS, "aws-summit-slide.jpg")
+CLIP_PATH = os.path.join(_ASSETS, "aws-summit-clip.mp3")
 
-    Generating it here costs nothing, adds no dependency and no committed
-    binary, and - the real point - gives the cell a KNOWN ANSWER. Ask a model to
-    name the bands and you can check whether it actually looked at the image
-    rather than produced something plausible.
+# Ground truth for the slide, transcribed by hand from the frame itself.
+SLIDE_TITLE = "Ingestion from database"
+SLIDE_CALLOUTS = (
+    "Pay according to job duration",
+    "Lower compute cost, up to 90%",
+    "Lower storage cost for rarely accessed data",
+)
+# Words that appear in the slide's boxes, useful as a recall check on OCR.
+SLIDE_KEYWORDS = ("AWS Glue", "Amazon EMR", "Amazon S3", "spot instance", "Database")
 
-        png = bands_png([(220, 30, 30), (30, 140, 60), (40, 70, 200)])
-        # -> 308 bytes; ground truth is "red, green, blue", top to bottom
+# Ground truth for the clip, transcribed by hand from the audio itself. The
+# speaker says this at 4:19 in the recording above.
+CLIP_TRANSCRIPT = (
+    "you can save cost by leveraging the tiering mechanism in Amazon S3, "
+    "in Amazon S3 you can store your infrequently accessed data"
+)
+# Score transcription on these rather than on an exact match. Speech recognition
+# legitimately differs on word boundaries and filler words, and "tiering" is
+# sometimes returned as "tearing", so an exact-match assertion would fail on a
+# correct transcript.
+CLIP_KEYWORDS = ("save cost", "leveraging", "Amazon S3")
 
-    Returns raw PNG bytes. Converse takes them directly; the OpenAI-shaped APIs
-    want base64 in a data URL (see the vision cells for both forms).
+
+def slide_jpeg() -> bytes:
+    """Raw JPEG bytes of the architecture slide. Converse takes these directly."""
+    with open(SLIDE_PATH, "rb") as handle:
+        return handle.read()
+
+
+def slide_data_url() -> str:
+    """The slide as a base64 data URL, the form the OpenAI-shaped APIs want."""
+    return "data:image/jpeg;base64," + base64.b64encode(slide_jpeg()).decode()
+
+
+def clip_mp3() -> bytes:
+    """Raw MP3 bytes of the speech excerpt: 7 s, mono, 16 kHz, 28 KB."""
+    with open(CLIP_PATH, "rb") as handle:
+        return handle.read()
+
+
+def clip_mp3_b64() -> str:
+    """The clip as bare base64, the form an `input_audio` block wants."""
+    return base64.b64encode(clip_mp3()).decode()
+
+
+def keyword_recall(answer: str, keywords: Sequence[str]) -> tuple[int, int]:
+    """How many of `keywords` appear in `answer`, case-insensitively.
+
+    Returned as (hits, total) so a cell can print a score it computed rather
+    than assert a verdict written in advance.
+
+    Whitespace is collapsed on both sides before matching. Without that, a model
+    that emits a double space or a non-breaking space inside an otherwise
+    correct phrase scores zero, while the same cell's `" ".join(answer.split())`
+    display normalises it and looks correct. That mismatch reads as a broken
+    model rather than a formatting difference.
     """
-    import binascii
-    import struct
-    import zlib
-
-    rows: list[bytes] = []
-    for red, green, blue in bands:
-        # PNG filter byte 0 (None) then RGB triples, one row at a time.
-        rows += [b"\x00" + bytes([red, green, blue]) * width] * band_height
-    raw = b"".join(rows)
-
-    def _chunk(tag: bytes, data: bytes) -> bytes:
-        crc = binascii.crc32(tag + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
-
-    height = band_height * len(bands)
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit RGB
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + _chunk(b"IHDR", ihdr)
-        + _chunk(b"IDAT", zlib.compress(raw))
-        + _chunk(b"IEND", b"")
-    )
+    lowered = " ".join((answer or "").lower().split())
+    hits = sum(1 for word in keywords if " ".join(word.lower().split()) in lowered)
+    return hits, len(keywords)
 
 
 def converse_reasoning(response: dict) -> str:

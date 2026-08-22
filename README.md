@@ -162,8 +162,14 @@ them in a final cell.
 
 In scope: documented public APIs of Amazon Bedrock serverless inference on both the
 `bedrock-runtime` and `bedrock-mantle` endpoints, for models that **return text**,
-across text and image inputs. Out of scope: image, video, speech and embedding
+across text, image and audio inputs. Out of scope: image, video, speech and embedding
 outputs, rerankers, Bedrock Marketplace, and models a newer generation has superseded.
+
+Vision and audio cells need an input, so two small files are committed under
+[`_shared/assets/`](_shared/assets) (64 KB together): a slide and a seven-second
+speech clip, both excerpted from a public AWS talk. Each gives its cell a known
+answer, so "read this slide" and "transcribe this" can be scored rather than
+admired. Provenance is in [`_shared/bedrock.py`](_shared/bedrock.py).
 
 Model behaviour on Bedrock changes without notice — a parameter accepted today can be
 rejected tomorrow. Where a notebook states a parameter matrix it also shows the probe

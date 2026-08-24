@@ -238,10 +238,17 @@ def inference_profiles(region: str = DEFAULT_REGION) -> set[str]:
         for page in paginator.paginate():
             for profile in page.get("inferenceProfileSummaries", []):
                 ids.add(profile["inferenceProfileId"])
-    except Exception:
-        # Missing permission or an older botocore: fall back to bare IDs. The
-        # failure is recorded by returning an empty set, not swallowed silently -
-        # resolve_runtime_id() then leaves the model ID untouched.
+    except Exception as exc:
+        # Missing permission or an older botocore: fall back to bare IDs. An empty
+        # set is indistinguishable from "this Region has no profiles", so say so out
+        # loud -- otherwise resolve_runtime_id() hands back a bare ID for an
+        # INFERENCE_PROFILE-only model and the 400 blames the model.
+        _warn_once(
+            f"profiles:{region}",
+            f"could not list inference profiles in {region} ({type(exc).__name__}). "
+            "Falling back to bare model IDs, which INFERENCE_PROFILE-only models "
+            "will refuse.",
+        )
         ids = set()
     _PROFILE_CACHE[key] = ids
     return ids
@@ -260,7 +267,9 @@ def resolve_runtime_id(
         anthropic.claude-sonnet-5  -> us.anthropic.claude-sonnet-5
         some-model-with-no-profile -> some-model-with-no-profile
     """
-    if model_id.split(".", 1)[0] in {"us", "eu", "apac", "global"}:
+    # Keep in step with the geo alternation used by api_prefix() and
+    # _norm_model_key(); "in" was missing here and nowhere else.
+    if model_id.split(".", 1)[0] in {"us", "eu", "apac", "global", "in"}:
         return model_id  # already a profile ID
     profiles = inference_profiles(region)
     candidate = f"{geo}.{model_id}"
@@ -495,15 +504,41 @@ def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
                 "in": set(),
                 "out": set(),
                 "infer": set(),
-                # The full ID including any ":0" suffix. Converse needs it; the
-                # key above deliberately drops it so lookups stay readable.
                 "id": summary["modelId"],
+                "id_infer": set(),
+                "variants": [],
                 "provider": summary.get("providerName", "?"),
             },
         )
         entry["in"].update(summary.get("inputModalities", []))
         entry["out"].update(summary.get("outputModalities", []))
-        entry["infer"].update(summary.get("inferenceTypesSupported", []))
+        types = set(summary.get("inferenceTypesSupported", []))
+        entry["infer"].update(types)
+        entry["variants"].append({"id": summary["modelId"], "infer": types})
+
+    # One catalogue key can carry several model IDs, and they do NOT share
+    # inference types: the `:0:24k` and `:0:300k` Nova entries are PROVISIONED-only
+    # context-window SKUs while the plain `:0` entry is the on-demand one. Keeping
+    # the FIRST-SEEN id while unioning `infer` across variants produced an entry
+    # claiming ON_DEMAND under an ID that only supports PROVISIONED, so
+    # runtime_id_for("amazon.nova-lite-v1") returned `amazon.nova-lite-v1:0:24k`
+    # and Converse answered "Model not found." 12 keys in us-east-1 have this shape.
+    #
+    # So choose the variant that is actually callable: on-demand first, then
+    # profile-addressable, then whatever came first. Among equals prefer the
+    # shortest ID, which is the one without a context-window segment.
+    def _rank(variant: dict) -> tuple:
+        infer = variant["infer"]
+        return (
+            0 if "ON_DEMAND" in infer else 1 if "INFERENCE_PROFILE" in infer else 2,
+            variant["id"].count(":"),
+            len(variant["id"]),
+        )
+
+    for entry in out.values():
+        best = min(entry["variants"], key=_rank)
+        entry["id"] = best["id"]
+        entry["id_infer"] = best["infer"]
     _RUNTIME_CATALOGUE_CACHE[region] = out
     return out
 
@@ -533,13 +568,39 @@ def _norm_model_key(value: str) -> str:
     value = re.sub(r"^(us|eu|apac|global|in)\.", "", value)
     had_version_suffix = ":" in value
     value = value.split(":")[0]
+    # A "-vN" tail IS the version marker, so any digit before it belongs to the model
+    # generation. Without this flag, `anthropic.claude-opus-4-7-v1:0` and
+    # `...-4-8-v1:0` both collapsed to `anthropic.claude-opus-4` -- the very
+    # collision the paragraph above says this function prevents -- and
+    # `zai.glm-5-v1:0` collapsed to `zai.glm`.
+    had_v_suffix = re.search(r"-v\d+$", value) is not None
     value = re.sub(r"-v\d+$", "", value)
     dated = re.search(r"-\d{8}$", value) is not None
     value = re.sub(r"-\d{8}$", "", value)
     value = value.replace("moonshotai.", "moonshot.").replace("-instruct", "")
-    if had_version_suffix and not dated:
+    if had_version_suffix and not dated and not had_v_suffix:
         value = re.sub(r"-\d$", "", value)
     return value.lower()
+
+
+_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Print a degradation notice once per process.
+
+    A control-plane failure used to be converted into a confident negative:
+    without `bedrock:ListFoundationModels`, endpoints_for() answered
+    {"mantle": False, "runtime": False} for every model and the notebooks printed
+    "not on runtime" for all of them as though it were a finding. Both helpers
+    failed the same way, so the notebooks' contradiction cross-check stayed silent.
+    Printing makes the degraded answer visible in committed output, which is where
+    a reader would otherwise trust it.
+    """
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    print(f"  [bedrock helper] {message}")
 
 
 def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool]:
@@ -552,7 +613,13 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
     target = _norm_model_key(model_id)
     try:
         on_mantle = any(_norm_model_key(m) == target for m in list_models(region))
-    except Exception:
+    except Exception as exc:
+        _warn_once(
+            f"list_models:{region}",
+            f"could not list bedrock-mantle models in {region} ({type(exc).__name__}). "
+            "Every 'mantle' answer below is False because the catalogue is unavailable, "
+            "NOT because the model is absent.",
+        )
         on_mantle = False
     try:
         # Compare against entry["id"], NOT the dict key. runtime_models() keys off
@@ -600,7 +667,9 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
         return None
 
     def _addressable(entry: dict) -> str:
-        if "ON_DEMAND" in entry["infer"]:
+        # The chosen variant's OWN types, not the union across variants: the union
+        # is what made a PROVISIONED-only ID look on-demand callable.
+        if "ON_DEMAND" in (entry.get("id_infer") or entry["infer"]):
             return entry["id"]
         # INFERENCE_PROFILE-only: the bare ID is refused outright.
         return resolve_runtime_id(entry["id"], region)
@@ -645,7 +714,11 @@ def _is_retryable(status: int, payload: dict) -> bool:
     if status in _TRANSIENT:
         return True
     if 400 <= status < 500:
-        message = str((payload.get("error") or {}).get("message") or "").lower()
+        # err() rather than a raw .get() chain: this runs inside post()'s HTTPError
+        # handler, so an AttributeError here turns "returns (code, body)" into a
+        # raised exception. A body of {"error": "Internal server error"} is exactly
+        # that shape, and is the text this check looks for.
+        message = err(payload, limit=400).lower()
         return any(marker in message for marker in _SERVER_FAULT_TEXT)
     return False
 
@@ -891,9 +964,27 @@ def err(payload: dict, limit: int = 160) -> str:
     Service error text often echoes back the ARN or ID you sent, so this redacts
     account IDs, IAM principals, and opaque IDs before returning. Notebook output is
     committed to a public repository; anything printed there is published.
+
+    Every container access is guarded because `post()` promises never to raise, and
+    dozens of cells exist precisely to *show* a 400. A body of
+    `{"error": "Internal server error"}` -- a string rather than an object, and the
+    very shape `_SERVER_FAULT_TEXT` exists to detect -- used to raise
+    `AttributeError` here and kill the kernel. A JSON array body did the same.
+
+    `limit` truncates for display. Callers that MATCH on the text (the self-healing
+    retries in 99-cross-cutting) must pass a limit large enough to contain the
+    parameter name, which can sit past character 160.
     """
-    e = payload.get("error") or {}
-    msg = e.get("message") or e.get("code") or payload.get("raw") or json.dumps(payload)
+    if not isinstance(payload, dict):
+        return redact_account(redact_ids(json.dumps(payload)))[:limit]
+    e = payload.get("error")
+    if isinstance(e, dict):
+        msg = e.get("message") or e.get("code")
+    elif isinstance(e, str):
+        msg = e
+    else:
+        msg = None
+    msg = msg or payload.get("message") or payload.get("raw") or json.dumps(payload)
     return redact_account(redact_ids(str(msg)))[:limit]
 
 
@@ -1027,13 +1118,19 @@ def extract_code_block(markdown: str) -> str:
     Falls back to the whole string when the model answered without fences.
     """
     text = markdown or ""
-    if "```" not in text:
-        return text.strip()
-    block = text.split("```")[1]
-    first_newline = block.find("\n")
-    if first_newline != -1 and " " not in block[:first_newline].strip():
-        block = block[first_newline + 1 :]  # drop the language tag
-    return block.strip()
+    # Require a newline after the opening fence. That drops the whole info string,
+    # not just a bare language tag -- "```python title=x" used to leave
+    # "python title=x" in the source, and inspect_code() then reported a syntax
+    # error on correct model output. It also skips inline ``` spans, which have no
+    # newline, so a sentence like "use ``` fences ```" is no longer mistaken for
+    # the answer.
+    # Both fences must start a line. Without the anchors, a sentence containing an
+    # inline ``` span lets the closing backticks of that span open a match, and the
+    # real block that follows is returned as an EMPTY string.
+    match = re.search(r"^```[^\n`]*\n(.*?)^```", text, re.S | re.M)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
 
 
 def inspect_code(source: str) -> dict:
@@ -1043,7 +1140,8 @@ def inspect_code(source: str) -> dict:
 
         parses     bool  - is it syntactically valid Python?
         error      str   - the SyntaxError message when it is not
-        functions  dict  - {name: [parameter names]} for each top-level def
+        functions  dict  - {name: [parameter names]} for each TOP-LEVEL def
+        methods    dict  - {"Class.name": [parameters]} for defs inside a class
         classes    list  - top-level class names
         imports    list  - modules the code would import
         raises     list  - exception type names in `raise` statements
@@ -1057,6 +1155,7 @@ def inspect_code(source: str) -> dict:
         "parses": False,
         "error": "",
         "functions": {},
+        "methods": {},
         "classes": [],
         "imports": [],
         "raises": [],
@@ -1069,12 +1168,25 @@ def inspect_code(source: str) -> dict:
         return out
 
     out["parses"] = True
-    for node in ast.walk(tree):
+    # TOP-LEVEL defs and classes only, from tree.body rather than ast.walk. Walking
+    # the whole tree reported methods as module-level functions, so a model that
+    # wrapped the required function in a class scored a pass on check_spec() while
+    # `from module import parse_config` would raise NameError. Methods are still
+    # reported, under their own key, so a caller can tell the two apart.
+    for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = [a.arg for a in node.args.args]
             args += [a.arg for a in node.args.kwonlyargs]
             out["functions"][node.name] = args
         elif isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = [a.arg for a in sub.args.args]
+                    args += [a.arg for a in sub.args.kwonlyargs]
+                    out["methods"][f"{node.name}.{sub.name}"] = args
+    # Imports, raises and calls are legitimately anywhere, so these keep walking.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
             out["classes"].append(node.name)
         elif isinstance(node, ast.Import):
             out["imports"] += [a.name.split(".")[0] for a in node.names]

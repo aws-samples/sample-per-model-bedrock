@@ -475,6 +475,9 @@ def converse_reasoning(response: dict) -> str:
 
 
 _RUNTIME_CATALOGUE_CACHE: dict[str, dict[str, dict]] = {}
+# Remembers a FAILED catalogue call, so it is attempted once per Region rather than
+# once per lookup.
+_RUNTIME_CATALOGUE_FAILED: dict[str, str] = {}
 
 
 def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
@@ -490,12 +493,21 @@ def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
     """
     if region in _RUNTIME_CATALOGUE_CACHE:
         return _RUNTIME_CATALOGUE_CACHE[region]
+    # A FAILURE was not remembered, only a success, so a caller without
+    # bedrock:ListFoundationModels made one failing control-plane call per lookup --
+    # 41 for a 40-row table, each waiting on the SDK's own retries. That is exactly
+    # the cost the caching note above says this cache exists to avoid. Remember the
+    # failure too, and re-raise the same error for every later caller.
+    if region in _RUNTIME_CATALOGUE_FAILED:
+        raise RuntimeError(_RUNTIME_CATALOGUE_FAILED[region])
     out: dict[str, dict] = {}
     try:
         summaries = control_client(region).list_foundation_models()
         summaries = summaries.get("modelSummaries", [])
     except Exception as exc:
-        raise RuntimeError(f"list_foundation_models failed: {exc}") from exc
+        message = f"list_foundation_models failed: {exc}"
+        _RUNTIME_CATALOGUE_FAILED[region] = message
+        raise RuntimeError(message) from exc
     for summary in summaries:
         key = summary["modelId"].split(":")[0]
         entry = out.setdefault(
@@ -634,7 +646,17 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
             _norm_model_key(entry["id"]) == target
             for entry in runtime_models(region).values()
         )
-    except Exception:
+    except Exception as exc:
+        # Same treatment as the mantle branch above. Without this the runtime half
+        # failed SILENTLY while only mantle announced itself, so a missing
+        # bedrock:ListFoundationModels printed "-- not on runtime --" on every row
+        # and the notebooks' contradiction cross-check saw nothing to contradict.
+        _warn_once(
+            f"endpoints_for:{region}",
+            f"could not list bedrock-runtime models in {region} "
+            f"({type(exc).__name__}). Every 'runtime' answer below is False because "
+            "the catalogue is unavailable, NOT because the model is absent.",
+        )
         on_runtime = False
     return {"mantle": on_mantle, "runtime": on_runtime}
 
@@ -663,7 +685,15 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
     """
     try:
         catalogue = runtime_models(region)
-    except Exception:
+    except Exception as exc:
+        # None here is indistinguishable from "this model is mantle-only", and every
+        # caller treats it that way. Say which it is.
+        _warn_once(
+            f"runtime_id_for:{region}",
+            f"could not list bedrock-runtime models in {region} "
+            f"({type(exc).__name__}). runtime_id_for() returns None for EVERY model "
+            "while the catalogue is unavailable; that is not the same as mantle-only.",
+        )
         return None
 
     def _addressable(entry: dict) -> str:
@@ -714,12 +744,22 @@ def _is_retryable(status: int, payload: dict) -> bool:
     if status in _TRANSIENT:
         return True
     if 400 <= status < 500:
-        # err() rather than a raw .get() chain: this runs inside post()'s HTTPError
-        # handler, so an AttributeError here turns "returns (code, body)" into a
-        # raised exception. A body of {"error": "Internal server error"} is exactly
-        # that shape, and is the text this check looks for.
-        message = err(payload, limit=400).lower()
-        return any(marker in message for marker in _SERVER_FAULT_TEXT)
+        # Match over the WHOLE serialised body, not err()'s extracted message.
+        # err() reads error.message and truncates, so two real bodies were missed:
+        # {"message": "Bad request", "details": "internal server error while
+        # validating"} -- the marker is in a sibling field -- and any body whose
+        # error.message carries the marker past the truncation limit. The copy of
+        # this policy in 99-cross-cutting/03 matched the full body, so the library
+        # and the notebook a reader copies disagreed on the same input.
+        #
+        # json.dumps on an arbitrary payload can still fail (a set, bytes), and this
+        # runs inside post()'s HTTPError handler where raising would turn the
+        # documented "returns (code, body)" contract into an exception.
+        try:
+            text = json.dumps(payload, default=str).lower()
+        except (TypeError, ValueError):
+            text = str(payload).lower()
+        return any(marker in text for marker in _SERVER_FAULT_TEXT)
     return False
 
 
@@ -1112,26 +1152,71 @@ def repair_tool_arguments(raw: str) -> str:
 # dedicated account, or Bedrock AgentCore's code-interpreter tool, both give you
 # that. Running it in this kernel does not.
 # ---------------------------------------------------------------------------
+_FENCE_LINE = re.compile(r"^[ \t]*(`{3,}|~{3,})([^\n]*)$", re.M)
+
+
+def _dedent_block(body: str) -> str:
+    """Strip the common indent, ignoring blank lines.
+
+    An indented fence gives every body line that indent, and Python cares.
+    textwrap.dedent needs uniform leading whitespace, which a blank line inside the
+    block breaks, so the common indent is computed over non-blank lines only.
+    """
+    lines = body.split("\n")
+    indents = [len(ln) - len(ln.lstrip()) for ln in lines if ln.strip()]
+    if indents:
+        cut = min(indents)
+        body = "\n".join(ln[cut:] if ln.strip() else ln for ln in lines)
+    return body.strip()
+
+
+def _is_info_string(rest: str) -> bool:
+    """Is the text after a fence marker an info string, or the rest of a sentence?
+
+    This distinction is the whole reliability of extract_code_block, and it has been
+    got wrong three times:
+
+      1. Matching a bare language tag left "python title=x" in the source, and
+         inspect_code() reported a syntax error on correct model output.
+      2. Anchoring the fence to column 0 rejected an indented fence, which is what a
+         model emits under a numbered list -- so the whole markdown came back.
+      3. Allowing any text after the marker let a prose line that merely STARTS with
+         an inline span open the match: "``` is the fence marker. Here is the code:"
+         swallowed the real block and returned an empty string. Restricting the
+         character set then rejected the legitimate "python title=x" from (1).
+
+    A CommonMark info string is short and word-like. A sentence has sentence
+    punctuation and more words. That is the discriminator.
+    """
+    rest = rest.strip()
+    if not rest:
+        return True
+    if len(rest) > 40 or len(rest.split()) > 3:
+        return False
+    return not re.search(r"[.,:;!?](?:\s|$)", rest)
+
+
 def extract_code_block(markdown: str) -> str:
     """Return the first fenced code block from a model response.
 
-    Falls back to the whole string when the model answered without fences.
+    Handles ``` and ~~~ fences, four-or-more markers, an indented fence, an info
+    string after the marker, and a block whose closing fence is missing because the
+    generation was truncated. Falls back to the whole string when the model answered
+    without fences at all.
     """
     text = markdown or ""
-    # Require a newline after the opening fence. That drops the whole info string,
-    # not just a bare language tag -- "```python title=x" used to leave
-    # "python title=x" in the source, and inspect_code() then reported a syntax
-    # error on correct model output. It also skips inline ``` spans, which have no
-    # newline, so a sentence like "use ``` fences ```" is no longer mistaken for
-    # the answer.
-    # Both fences must start a line. Without the anchors, a sentence containing an
-    # inline ``` span lets the closing backticks of that span open a match, and the
-    # real block that follows is returned as an EMPTY string.
-    match = re.search(r"^```[^\n`]*\n(.*?)^```", text, re.S | re.M)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
-
+    opens = [m for m in _FENCE_LINE.finditer(text) if _is_info_string(m.group(2))]
+    if not opens:
+        return text.strip()
+    opener = opens[0]
+    after = text[opener.end():].lstrip("\n")
+    closer = _FENCE_LINE.search(after)
+    if closer is not None:
+        return _dedent_block(after[:closer.start()])
+    # No closing fence: a truncated generation. Returning the whole string kept the
+    # ```python line in the source, so inspect_code() reported "SyntaxError line 1"
+    # and the model was blamed for the truncation.
+    return _dedent_block(after)
 
 def inspect_code(source: str) -> dict:
     """Statically analyse generated Python. Never executes it.
@@ -1173,29 +1258,52 @@ def inspect_code(source: str) -> dict:
     # wrapped the required function in a class scored a pass on check_spec() while
     # `from module import parse_config` would raise NameError. Methods are still
     # reported, under their own key, so a caller can tell the two apart.
+    def _params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+        """Every parameter name, in call order.
+
+        `args + kwonlyargs` alone dropped positional-only parameters, `*rest` and
+        `**kw`. `check_spec(params=["path", "strict"])` then failed a model that had
+        written `def parse_config(path, /, strict=False)` correctly -- and failed it
+        with an empty `reason`, so the notebook printed a bare False.
+        """
+        a = fn.args
+        names = [p.arg for p in (*a.posonlyargs, *a.args)]
+        if a.vararg:
+            names.append(f"*{a.vararg.arg}")
+        names += [p.arg for p in a.kwonlyargs]
+        if a.kwarg:
+            names.append(f"**{a.kwarg.arg}")
+        return names
+
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            args = [a.arg for a in node.args.args]
-            args += [a.arg for a in node.args.kwonlyargs]
-            out["functions"][node.name] = args
+            out["functions"][node.name] = _params(node)
         elif isinstance(node, ast.ClassDef):
+            # Top-level classes only -- the docstring says so, and collecting these
+            # with ast.walk instead reported a class nested inside a function as
+            # top-level, which is the same fault the defs above were fixed for.
+            out["classes"].append(node.name)
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    args = [a.arg for a in sub.args.args]
-                    args += [a.arg for a in sub.args.kwonlyargs]
-                    out["methods"][f"{node.name}.{sub.name}"] = args
+                    out["methods"][f"{node.name}.{sub.name}"] = _params(sub)
     # Imports, raises and calls are legitimately anywhere, so these keep walking.
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            out["classes"].append(node.name)
-        elif isinstance(node, ast.Import):
+        if isinstance(node, ast.Import):
             out["imports"] += [a.name.split(".")[0] for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             out["imports"].append((node.module or "").split(".")[0])
         elif isinstance(node, ast.Raise):
+            # `raise json.JSONDecodeError(...)` and `raise exc.ValidationError(...)`
+            # recorded NOTHING, because only `.id` was read -- an ast.Attribute has
+            # `.attr`. The Call branch below already handled both; this one did not,
+            # so check_spec(raises=...) failed correct code with "raises nothing".
             exc_node = node.exc
-            name = getattr(exc_node, "id", None) or getattr(
-                getattr(exc_node, "func", None), "id", None
+            called = getattr(exc_node, "func", None)
+            name = (
+                getattr(exc_node, "id", None)
+                or getattr(exc_node, "attr", None)
+                or getattr(called, "id", None)
+                or getattr(called, "attr", None)
             )
             if name:
                 out["raises"].append(name)
@@ -1221,15 +1329,46 @@ def check_spec(
     """
     info = inspect_code(source)
     defines = function in info["functions"]
-    signature = defines and (params is None or info["functions"][function] == params)
+    # Compare the NAMED parameters, ignoring `*args` / `**kwargs`. Adding those to
+    # the list (correctly, they are part of the signature) broke the `==` comparison
+    # for spec-compliant code: `def chunk_by_tokens(text, max_tokens, overlap=50,
+    # **kwargs)` meets a spec of ["text","max_tokens","overlap"], and the previous
+    # round reported signature=False for it. A spec names the parameters a caller
+    # passes; extra catch-alls do not violate it.
+    actual = [a for a in info["functions"].get(function, [])
+              if not a.startswith("*")]
+    signature = defines and (params is None or actual == list(params))
     guard = raises is None or raises in info["raises"]
+    # Say WHICH check failed. `reason` used to be empty whenever the function existed,
+    # so a signature or guard mismatch printed a bare False and the notebook gave the
+    # reader nothing to act on. An unexplained failure is worse than no check.
+    if info["error"]:
+        reason = info["error"]
+    elif not defines:
+        found = ", ".join(sorted(info["functions"])) or "no top-level defs"
+        method = next((m for m in info["methods"] if m.endswith(f".{function}")), None)
+        reason = f"no top-level def {function} (found: {found})"
+        if method:
+            reason += f"; it is defined as the method {method}"
+    elif not signature:
+        reason = (f"{function} takes {actual}, expected {list(params)}"
+                  + (f" (it also accepts "
+                     f"{[a for a in info['functions'][function] if a.startswith('*')]}"
+                     f", which does not violate the spec)"
+                     if any(a.startswith("*") for a in info["functions"][function])
+                     else ""))
+    elif not guard:
+        raised = ", ".join(sorted(set(info["raises"]))) or "nothing"
+        reason = f"{function} raises {raised}, expected {raises}"
+    else:
+        reason = ""
     return {
         "parses": info["parses"],
         "defines": defines,
         "signature": signature,
         "guard": guard,
         "ok": info["parses"] and defines and signature and guard,
-        "reason": info["error"] or ("" if defines else f"no def {function}"),
+        "reason": reason,
     }
 
 

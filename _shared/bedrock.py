@@ -677,11 +677,22 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
     explicit "not there" rather than a guessed ID that 400s later.
 
     Caveat worth knowing: this answers for Converse, InvokeModel and the
-    /openai/v1 paths. The /anthropic/v1/messages surface is stricter - it serves
-    only the Claude models whose inference profile carries no date, so
-    `us.anthropic.claude-haiku-4-5-20251001-v1:0` works on Converse and returns
-    404 on Messages. 00-foundations/04 probes that difference rather than
-    encoding it here, because it is the kind of fact that moves.
+    /openai/v1 paths. The /anthropic/v1/messages surface on bedrock-runtime is
+    stricter, and NOT in a way any ID shape predicts. Measured 7 Sep 2026 over all
+    41 Claude IDs on runtime: every model that serves Messages also serves Converse,
+    four serve Converse only, and four very old ones serve neither -- so the
+    Messages-capable set is a strict SUBSET of the Converse-capable set, and it is not
+    the short-ID ones. `us.anthropic.claude-sonnet-4-6`
+    and `us.anthropic.claude-opus-4-6-v1` are short profile IDs that 404 on Messages,
+    while `us.anthropic.claude-haiku-4-5-20251001-v1:0` -- dated, and documented here
+    for weeks as the example of one that 404s -- now answers 200.
+
+    So this docstring used to state a rule ("serves only the Claude models whose
+    inference profile carries no date") that was inferred from one counter-example and
+    is now false in both directions. Reach for Converse on runtime unless you need a
+    Messages-only feature, and probe the model you actually intend to call.
+    `00-foundations/04` measures the subset live and
+    `capabilities.RUNTIME_MESSAGES_CLAUDE` records what it found.
     """
     try:
         catalogue = runtime_models(region)

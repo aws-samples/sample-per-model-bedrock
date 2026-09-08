@@ -101,7 +101,7 @@ Open one folder. Each notebook is self-contained.
 | [`10-nvidia-nemotron/`](10-nvidia-nemotron/) | nemotron-super-3-120b, nano 9b/12b/30b | both | Chat Completions | Core inference across the cost/quality curve |
 | [`11-xai-grok/`](11-xai-grok/) | grok-4.6 · grok-4.3 | 4.6 **both** (runtime: profile-only; mantle: `us-west-2` only) · 4.3 **mantle** | Responses · Chat Completions · Converse | Grok 4.6: the effort dial measured, encrypted reasoning replayed, why `global.` caches worse than `us.` · Grok 4.3: always-on reasoning |
 | [`12-writer-palmyra/`](12-writer-palmyra/) | palmyra-vision-7b · palmyra-x4 · palmyra-x5 | vision both · x4/x5 **runtime** | Chat Completions · Converse | Vision, and working around a model with no tool support · the text models, which need an inference profile |
-| [`13-amazon-nova/`](13-amazon-nova/) | nova-micro · nova-lite · nova-pro | **runtime** | Converse | Tier selection graded on a checkable task · vision on lite/pro · what a provider-deprecated model looks like |
+| [`13-amazon-nova/`](13-amazon-nova/) | nova-micro · nova-lite · nova-pro · nova-2-lite (profile-only) | **runtime** | Converse | Tier selection graded on a checkable task · vision on lite/pro/2-lite · what a provider-deprecated model looks like · when the `ON_DEMAND` flag decides whether a bare ID works |
 | [`14-openai-gpt-oss/`](14-openai-gpt-oss/) | gpt-oss 20b/120b · gpt-oss-safeguard 20b/120b | both | Chat Completions · Converse | Where the reasoning trace lives on each endpoint · policy classification graded on a labelled set |
 | [`15-meta-llama/`](15-meta-llama/) | llama4-scout · llama4-maverick | **runtime** | Converse | Mixture-of-experts sizing · inference-profile-only access · vision · validating tool calls |
 

@@ -61,13 +61,14 @@ Four things in those snippets cost people hours, all covered in
 [`00-foundations/01`](00-foundations/01-endpoints-auth-and-the-three-paths.ipynb):
 
 - **Model IDs differ per endpoint.** `openai.gpt-oss-20b` on `bedrock-mantle` is
-  `openai.gpt-oss-20b-1:0` on `bedrock-runtime`; Claude and the GPT-5.6 and Grok 4.6
-  profiles need a `us.` or `global.` prefix. The wrong one gives *"The provided model
+  `openai.gpt-oss-20b-1:0` on `bedrock-runtime`; Claude and the GPT-5.6, GPT-6 Astra
+  and Grok 4.6 profiles need a `us.` or `global.` prefix. The wrong one gives *"The provided model
   identifier is invalid"*, which reads like a missing model. `runtime_id_for()`
   translates; `endpoints_for()` says which endpoints serve a model at all.
 - **So does the URL path.** `bedrock-runtime` serves every OpenAI-compatible model on
   `/openai/v1` and has no `/v1` inference path; on `bedrock-mantle` the prefix depends
-  on the model family.
+  on the model family, and inside the OpenAI family on the product line rather than the
+  version number — hosted GPT on `/openai/v1`, open-weight `gpt-oss` on bare `/v1`.
 - **A wrong path on `bedrock-runtime` returns HTTP 200**, with a Coral
   `UnknownOperationException` in the body — so `status == 200` reads it as success.
   Use `ok(status, body)` from [`_shared/bedrock.py`](_shared/bedrock.py).
@@ -89,7 +90,7 @@ Open one folder. Each notebook is self-contained.
 
 | Folder | Models | Endpoint | API | What the notebooks cover |
 |---|---|---|---|---|
-| [`01-openai-gpt/`](01-openai-gpt/) | gpt-5.6 sol/terra/luna, gpt-5.5, gpt-5.4 · gpt-oss 20b/120b · gpt-oss-safeguard | gpt-5.6 **both** · earlier gpt-5.x mantle · gpt-oss both | Responses · Chat Completions · Converse | Core inference · web search · tools & strict JSON · prompt caching · server-side Lambda tools & fine-tuning |
+| [`01-openai-gpt/`](01-openai-gpt/) | gpt-6-astra · gpt-5.6 sol/terra/luna, gpt-5.5, gpt-5.4 · gpt-oss 20b/120b · gpt-oss-safeguard | gpt-6-astra **both** (runtime: profile-only; mantle: `us-west-2` only) · gpt-5.6 **both** · earlier gpt-5.x mantle · gpt-oss both | Responses · Chat Completions · Converse | Core inference · web search · tools & strict JSON · prompt caching · server-side Lambda tools & fine-tuning |
 | [`02-anthropic-claude/`](02-anthropic-claude/) | opus-5, sonnet-5, opus-4-8, opus-4-7, haiku-4-5, fable-5, fable-5.1 | both | Messages | Core inference · adaptive thinking, tool loops, caching · computer use, memory, compaction |
 | [`03-google-gemma/`](03-google-gemma/) | gemma-4 31b · 26b-a4b · e2b · gemma-3 4b · 12b · 27b | gemma 4 **mantle** · gemma 3 both | gemma 4 Responses **and** Chat Completions · gemma 3 Chat Completions | Gemma 4 end to end · Gemma 3 on both endpoints, and why the two generations share almost nothing |
 | [`04-qwen/`](04-qwen/) | qwen3 32b/235b/next-80b, coder 30b/480b/next, vl-235b | both | Chat Completions | Core inference & tools · coding models & vision |

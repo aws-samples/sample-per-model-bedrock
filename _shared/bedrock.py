@@ -59,7 +59,8 @@ DEFAULT_REGION = "us-east-1"
 # URL paths, which are per-endpoint as well as per-model.
 #
 # bedrock-mantle has three families:
-#   /openai/v1/*        google gemma-4, openai gpt-5.x, xai
+#   /openai/v1/*        google gemma-4, the hosted openai gpt models (gpt-5.x,
+#                       gpt-6-astra), xai
 #   /v1/*               openai gpt-oss + every Chat-Completions-only family
 #   /anthropic/v1/*     anthropic claude only
 #
@@ -75,7 +76,23 @@ DEFAULT_REGION = "us-east-1"
 # Control-plane paths (models, files, projects, fine-tuning, data retention)
 # live under mantle's /v1/*, never /openai/v1/*.
 # ---------------------------------------------------------------------------
-_OPENAI_PREFIX_FAMILIES = ("google.gemma-4", "openai.gpt-5", "xai.")
+_OPENAI_PREFIX_FAMILIES = ("google.gemma-4", "xai.")
+
+# The OpenAI family splits on mantle, and this used to be keyed on the literal
+# "openai.gpt-5" -- a model GENERATION. GPT-6 Astra falsified that on 8 Sep 2026:
+# it is not a gpt-5, so it fell through to bare /v1, where mantle refuses it in as
+# many words -- `model `openai.gpt-6-astra` isn't supported on this route` -- while
+# /openai/v1 answers 200. A generation bump silently moved a model to a prefix that
+# does not serve it, and nothing here disagreed.
+#
+# The durable discriminator is not the version but WHICH openai line it is: the
+# hosted GPT models are served under /openai/v1, and the open-weight gpt-oss line
+# (gpt-oss-safeguard included) under bare /v1. Keyed that way a gpt-7 needs no edit.
+# 01-openai-gpt/01 §2 measures both prefixes for each openai model mantle lists in
+# the Region and prints the rows where this function disagrees with the service,
+# which is the check whose absence let the gpt-5 key survive.
+_OPENAI_HOSTED_GPT = "openai.gpt-"
+_OPENAI_OPEN_WEIGHT = "openai.gpt-oss"
 
 
 def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
@@ -85,8 +102,12 @@ def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
 
         api_prefix("openai.gpt-oss-20b")                 -> "/v1"
         api_prefix("openai.gpt-oss-20b-1:0", "runtime")  -> "/openai/v1"
+        api_prefix("openai.gpt-6-astra")                 -> "/openai/v1"
 
-    Verified against both endpoints in us-east-1 on 2026-08-20.
+    Verified against both endpoints in us-east-1 on 2026-08-20, and re-measured for
+    the whole openai family in us-east-1 and us-west-2 on 9 Sep 2026 when GPT-6
+    Astra arrived. This is a lookup over measured behaviour, not a rule the service
+    guarantees: probe the model you actually intend to call.
     """
     if endpoint not in ("mantle", "runtime"):
         raise ValueError(f"endpoint must be 'mantle' or 'runtime', got {endpoint!r}")
@@ -97,6 +118,10 @@ def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
     if endpoint == "runtime":
         # Runtime serves every OpenAI-compatible model on /openai/v1.
         return "/openai/v1"
+    if bare.startswith(_OPENAI_HOSTED_GPT):
+        # gpt-oss is the open-weight line and sits on bare /v1; every other
+        # openai.gpt-* is hosted and sits on /openai/v1.
+        return "/v1" if bare.startswith(_OPENAI_OPEN_WEIGHT) else "/openai/v1"
     if any(bare.startswith(p) for p in _OPENAI_PREFIX_FAMILIES):
         return "/openai/v1"
     return "/v1"

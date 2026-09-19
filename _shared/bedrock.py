@@ -1068,7 +1068,24 @@ def err(payload: dict, limit: int = 160) -> str:
 # Small conveniences used across notebooks
 # ---------------------------------------------------------------------------
 def list_models(region: str = DEFAULT_REGION) -> list[str]:
-    """Model inventory. NOTE: only /v1/models works - /openai/v1/models is 404."""
+    """Model inventory on bedrock-mantle, the only endpoint that serves one.
+
+    `GET /v1/models` here, and GET-only: a POST to it is 405. `/openai/v1/models`
+    is 404 on mantle. bedrock-runtime serves neither path, so this helper is
+    mantle-shaped on purpose; discovery there is ListFoundationModels and
+    ListInferenceProfiles, wrapped by runtime_models() and inference_profiles()
+    above.
+
+    Note for anyone tempted to point this at runtime: how it fails depends on the
+    verb. The GET below gets 404 there and raises, which is loud. Drop the
+    `method="GET"` and it becomes a POST with no body, which runtime answers with
+    HTTP 200 and a Coral SerializationException: the `code != 200` check passes and
+    `payload.get("data", [])` returns [], so the Region reads as having no models
+    rather than as unreachable. Worth knowing that this particular fault is the one
+    shape unknown_op() does not match, since it names serialization rather than the
+    operation - no caller passes a None body today, so nothing reaches it. Measured
+    19 Sep 2026 in us-east-1; 00-foundations/01 section 6 prints the sweep.
+    """
     code, payload = post("/v1/models", None, region=region, method="GET")
     if code != 200:
         raise RuntimeError(f"list_models failed {code}: {err(payload)}")

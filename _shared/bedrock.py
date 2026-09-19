@@ -1068,10 +1068,11 @@ def err(payload: dict, limit: int = 160) -> str:
 # Small conveniences used across notebooks
 # ---------------------------------------------------------------------------
 def list_models(region: str = DEFAULT_REGION) -> list[str]:
-    """Model inventory on bedrock-mantle, the only endpoint that serves one.
+    """Model inventory on bedrock-mantle, which is the endpoint that serves one.
 
     `GET /v1/models` here, and GET-only: a POST to it is 405. `/openai/v1/models`
-    is 404 on mantle. bedrock-runtime serves neither path, so this helper is
+    is 404 on mantle. bedrock-runtime served neither path when this was measured,
+    in the three Regions swept by 00-foundations/01 section 6, so this helper is
     mantle-shaped on purpose; discovery there is ListFoundationModels and
     ListInferenceProfiles, wrapped by runtime_models() and inference_profiles()
     above.

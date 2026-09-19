@@ -286,11 +286,22 @@ def resolve_runtime_id(
 
     Prefers the geo-prefixed inference profile when one exists, because it is
     required for INFERENCE_PROFILE-only models and strictly better (cross-Region
-    routing) for the rest. Falls back to the ID you passed in.
+    routing) for the rest. Where that geo has no profile here and the model is not
+    offered ON_DEMAND, tries the Region's other profile geos and then `global.`,
+    because the bare ID is refused outright for such a model. Otherwise falls back
+    to the ID you passed in, which is right for a model whose bare ID is callable.
 
         amazon.nova-lite-v1:0      -> us.amazon.nova-lite-v1:0
         anthropic.claude-sonnet-5  -> us.anthropic.claude-sonnet-5
+        moonshotai.kimi-k3         -> us.moonshotai.kimi-k3     (in us-east-1)
+        moonshotai.kimi-k3         -> global.moonshotai.kimi-k3 (in eu-central-1,
+                                      which carries no eu. profile for it)
+        anthropic.claude-opus-5    -> eu.anthropic.claude-opus-5 (in eu-central-1)
         some-model-with-no-profile -> some-model-with-no-profile
+
+    `global.` is last and not a preference on purpose: `11-xai-grok/02` measures a
+    lower cache hit rate on `global.` than on `us.` for the same model, so reaching
+    for it while a regional profile exists would cost you.
     """
     # Keep in step with the geo alternation used by api_prefix() and
     # _norm_model_key(); "in" was missing here and nowhere else.
@@ -304,14 +315,37 @@ def resolve_runtime_id(
     versioned = f"{candidate}:0"
     if versioned in profiles:
         return versioned
-    # No profile. Converse is strict about the version suffix where the catalogue
-    # has one: `qwen.qwen3-32b-v1` is rejected as an invalid identifier while
-    # `qwen.qwen3-32b-v1:0` succeeds. The catalogue key drops that suffix, so
-    # recover the full ID rather than handing Converse a form it will refuse.
     try:
         entry = runtime_models(region).get(model_id.split(":")[0])
     except Exception:
         entry = None
+    # No profile in the geo asked for. For a model the catalogue offers ON_DEMAND
+    # the bare ID below is callable, so leave it alone. For one that it does not,
+    # the bare ID cannot work, and another profile in this Region can.
+    #
+    # Measured 18 Sep 2026, eu-central-1: moonshotai.kimi-k3 is
+    # INFERENCE_PROFILE-only and that Region carries global.moonshotai.kimi-k3
+    # and no eu. profile. This function used to fall through to the bare ID,
+    # which Converse refuses with "Invocation of model ID moonshotai.kimi-k3
+    # with on-demand throughput isn't supported", while us. there returns "The
+    # provided model identifier is invalid". The profile that works was already
+    # in the list this function had fetched.
+    #
+    # The other geos come from the Region's own profile list rather than a
+    # region-to-geo table, so "apac" and "in" are found without being enumerated
+    # here, and global is tried last: eu-central-1 carries 21 eu. profiles beside
+    # its 20 global. ones, and preferring global over them would cost cache hits
+    # (measured in 11-xai-grok/02).
+    if entry and "ON_DEMAND" not in (entry.get("id_infer") or entry.get("infer") or ()):
+        others = sorted({p.split(".", 1)[0] for p in profiles} - {geo, "global"})
+        for fallback_geo in others + ["global"]:
+            for fallback in (f"{fallback_geo}.{model_id}", f"{fallback_geo}.{model_id}:0"):
+                if fallback in profiles:
+                    return fallback
+    # No profile. Converse is strict about the version suffix where the catalogue
+    # has one: `qwen.qwen3-32b-v1` is rejected as an invalid identifier while
+    # `qwen.qwen3-32b-v1:0` succeeds. The catalogue key drops that suffix, so
+    # recover the full ID rather than handing Converse a form it will refuse.
     if entry and entry.get("id"):
         return entry["id"]
     return model_id

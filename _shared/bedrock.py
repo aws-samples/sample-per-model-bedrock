@@ -225,7 +225,10 @@ def runtime_anthropic_client(region: str = DEFAULT_REGION):
 #   Converse(modelId="us.anthropic.claude-sonnet-5")  -> 200
 #
 # Verified against us-east-1. resolve_runtime_id() below hides the difference by
-# asking the service which profiles exist rather than guessing at the prefix.
+# asking the service which profiles exist rather than guessing at the prefix. Guessing
+# it as "us." is not safe even inside this family: 02-anthropic-claude/01 measures a
+# Claude model whose only profile in four Regions is global., where the us. form draws
+# "The provided model identifier is invalid".
 # ---------------------------------------------------------------------------
 DEFAULT_GEO = "us"
 
@@ -293,6 +296,9 @@ def resolve_runtime_id(
 
         amazon.nova-lite-v1:0      -> us.amazon.nova-lite-v1:0
         anthropic.claude-sonnet-5  -> us.anthropic.claude-sonnet-5
+        anthropic.claude-sonnet-5-5
+                                   -> global.anthropic.claude-sonnet-5-5 (in us-east-1,
+                                      which carries no us. profile for it)
         moonshotai.kimi-k3         -> us.moonshotai.kimi-k3     (in us-east-1)
         moonshotai.kimi-k3         -> global.moonshotai.kimi-k3 (in eu-central-1,
                                       which carries no eu. profile for it)
@@ -726,14 +732,22 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
     Pass a mantle model ID and get back the runtime form, including the geo
     inference-profile prefix when the model requires one:
 
-        openai.gpt-oss-20b         -> openai.gpt-oss-20b-1:0
-        qwen.qwen3-32b             -> qwen.qwen3-32b-v1:0
-        moonshotai.kimi-k2.5       -> moonshotai.kimi-k2.5
-        anthropic.claude-opus-5    -> us.anthropic.claude-opus-5
-        google.gemma-4-31b         -> None  (mantle only)
+        openai.gpt-oss-20b          -> openai.gpt-oss-20b-1:0
+        qwen.qwen3-32b              -> qwen.qwen3-32b-v1:0
+        moonshotai.kimi-k2.5        -> moonshotai.kimi-k2.5
+        anthropic.claude-opus-5     -> us.anthropic.claude-opus-5
+        anthropic.claude-sonnet-5-5 -> global.anthropic.claude-sonnet-5-5
+        google.gemma-4-31b          -> None  (mantle only)
 
-    Returns None when the model is not on runtime at all, so callers get an
-    explicit "not there" rather than a guessed ID that 400s later.
+    The prefix is whatever the Region's profile list carries, not `us.` by rule. On
+    28 Sep 2026 `anthropic.claude-sonnet-5-5` had no `us.` profile in us-east-1,
+    us-east-2 or us-west-2 and no `eu.` one in eu-central-1, only `global.`, so the
+    `us.` form is refused there with "The provided model identifier is invalid".
+    `02-anthropic-claude/01` counts that per Region and invokes all three forms.
+
+    Returns None when the model is not on bedrock-runtime *in that Region* at all, so
+    callers get an explicit "not there" rather than a guessed ID that 400s later. It
+    is a per-Region answer: a None here is not a statement about Bedrock.
 
     Caveat worth knowing: this answers for Converse, InvokeModel and the
     /openai/v1 paths. The /anthropic/v1/messages surface on bedrock-runtime is

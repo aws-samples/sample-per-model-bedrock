@@ -227,8 +227,9 @@ def runtime_anthropic_client(region: str = DEFAULT_REGION):
 # Verified against us-east-1. resolve_runtime_id() below hides the difference by
 # asking the service which profiles exist rather than guessing at the prefix. Guessing
 # it as "us." is not safe even inside this family: 02-anthropic-claude/01 measures a
-# Claude model whose only profile in four Regions is global., where the us. form draws
-# "The provided model identifier is invalid".
+# Claude model whose only profile geo in four Regions is global., and the us. form for
+# it drew "The provided model identifier is invalid" in the two of those Regions where
+# it was invoked.
 # ---------------------------------------------------------------------------
 DEFAULT_GEO = "us"
 
@@ -739,11 +740,13 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
         anthropic.claude-sonnet-5-5 -> global.anthropic.claude-sonnet-5-5
         google.gemma-4-31b          -> None  (mantle only)
 
-    The prefix is whatever the Region's profile list carries, not `us.` by rule. On
-    28 Sep 2026 `anthropic.claude-sonnet-5-5` had no `us.` profile in us-east-1,
-    us-east-2 or us-west-2 and no `eu.` one in eu-central-1, only `global.`, so the
-    `us.` form is refused there with "The provided model identifier is invalid".
-    `02-anthropic-claude/01` counts that per Region and invokes all three forms.
+    The prefix is whatever the Region's profile list carries, not `us.` by rule. Read
+    28 Sep 2026: `anthropic.claude-sonnet-5-5` carries only a `global.` profile in
+    us-east-1, us-east-2, us-west-2 and eu-central-1. Invoked the same day, the `us.`
+    form drew "The provided model identifier is invalid" in us-east-1 and us-west-2;
+    us-east-2 and eu-central-1 were catalogue-read only, so treat those two as
+    unmeasured rather than as agreeing. `02-anthropic-claude/01` counts the profile
+    geos per Region and invokes all three forms in the Region it pins.
 
     Returns None when the model is not on bedrock-runtime *in that Region* at all, so
     callers get an explicit "not there" rather than a guessed ID that 400s later. It

@@ -97,7 +97,7 @@ Open one folder. Each notebook is self-contained.
 | [`05-deepseek/`](05-deepseek/) | v3.2, v3.1 | v3.2 both · v3.1 **mantle** | Chat Completions | Core inference, reasoning effort, tools, structured output |
 | [`06-zai-glm/`](06-zai-glm/) | glm-5, glm-4.7, glm-4.7-flash, glm-4.6 | both · 4.6 **mantle** | Chat Completions | Core inference plus cost-aware routing across the size ladder |
 | [`07-mistral/`](07-mistral/) | mistral-large-3, ministral 3b/8b/14b, magistral, devstral-2, voxtral | both | Chat Completions | Size ladder & routing · Devstral coding, Voxtral |
-| [`08-moonshot-kimi/`](08-moonshot-kimi/) | kimi-k2.5, kimi-k2-thinking | both | Chat Completions | Core inference, long context, agentic patterns |
+| [`08-moonshot-kimi/`](08-moonshot-kimi/) | kimi-k2.5, kimi-k2-thinking · kimi-k3 | k2 both · k3 **runtime** (profile-only, and the prefix differs by Region) | Chat Completions · k3 also Responses and Converse | Core inference, long context, agentic patterns · K3: API support, sampling and prompt caching measured per model and per surface |
 | [`09-minimax/`](09-minimax/) | minimax-m2.5, m2.1, m2 | both | Chat Completions | Core inference plus a version-migration test across three generations |
 | [`10-nvidia-nemotron/`](10-nvidia-nemotron/) | nemotron-super-3-120b, nano 9b/12b/30b | both | Chat Completions | Core inference across the cost/quality curve |
 | [`11-xai-grok/`](11-xai-grok/) | grok-4.6 · grok-4.3 | 4.6 **both** (runtime: profile-only; mantle: `us-west-2` only) · 4.3 **mantle** | Responses · Chat Completions · Converse | Grok 4.6: the effort dial measured, encrypted reasoning replayed, why `global.` caches worse than `us.` · Grok 4.3: always-on reasoning |

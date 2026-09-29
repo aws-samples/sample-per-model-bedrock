@@ -3,28 +3,27 @@
 Import from a notebook with:
 
     import sys; sys.path.insert(0, "../_shared")
-    from bedrock import client, base_url, post, converse, resolve_runtime_id
+    from bedrock import endpoints_for, parse_json_lenient
 
 Amazon Bedrock serves models through two inference endpoints. AWS recommends
-`bedrock-runtime` for new applications, and since August 2026 it speaks all five
+`bedrock-runtime` for new applications, and as of September 2026 it speaks all five
 APIs:
 
     bedrock-runtime   InvokeModel / Converse via the AWS SDK, plus the
                       OpenAI-compatible Responses and Chat Completions APIs and
                       the Anthropic Messages API on its /openai/v1 and
                       /anthropic/v1 paths. SigV4 *or* a Bedrock API key.
-                      Helpers: runtime_client(), converse(), runtime_post(),
-                      runtime_openai_client().
+                      Helpers: runtime_id_for(), runtime_models().
     bedrock-mantle    Responses / Chat Completions / Messages. Adds server-side
                       tool use, asynchronous inference (background=true), and
-                      Projects and Workspaces. Helpers: client(), post().
+                      Projects and Workspaces. Helpers: post(), list_models().
 
 Which endpoint serves a given model is a per-model fact, not a preference, and
 so is the URL path and even the model ID — the same model can be
 `openai.gpt-oss-20b` on mantle and `openai.gpt-oss-20b-1:0` on runtime.
 `endpoints_for()` answers the first question, `api_prefix()` the second and
 `runtime_id_for()` the third. Each family's notebook states the answer for its
-own models and shows the working.
+own models.
 
 Everything here is deliberately small and dependency-light: the notebooks are the
 teaching material, this file only removes repetition.
@@ -32,8 +31,8 @@ teaching material, this file only removes repetition.
 See 00-foundations/ for the full explanation of auth, the three Mantle URL path
 families, Converse and inference profiles, and model discovery.
 
-Style note: the SDK imports in token(), client(), anthropic_client() and
-runtime_client() are function-local on purpose, against the usual
+Style note: the SDK imports in token() and control_client() are
+function-local on purpose, against the usual
 imports-at-top rule (PEP 8). This module is imported by every notebook,
 including ones that never touch a given SDK, and a function-local import keeps
 `import bedrock` working when only a subset of the optional SDKs is installed.
@@ -60,7 +59,7 @@ DEFAULT_REGION = "us-east-1"
 #
 # bedrock-mantle has three families:
 #   /openai/v1/*        google gemma-4, the hosted openai gpt models (gpt-5.x,
-#                       gpt-6-astra), xai
+#                       gpt-6), xai
 #   /v1/*               openai gpt-oss + every Chat-Completions-only family
 #   /anthropic/v1/*     anthropic claude only
 #
@@ -78,19 +77,11 @@ DEFAULT_REGION = "us-east-1"
 # ---------------------------------------------------------------------------
 _OPENAI_PREFIX_FAMILIES = ("google.gemma-4", "xai.")
 
-# The OpenAI family splits on mantle, and this used to be keyed on the literal
-# "openai.gpt-5" -- a model GENERATION. GPT-6 Astra falsified that on 8 Sep 2026:
-# it is not a gpt-5, so it fell through to bare /v1, where mantle refuses it in as
-# many words -- `model `openai.gpt-6-astra` isn't supported on this route` -- while
-# /openai/v1 answers 200. A generation bump silently moved a model to a prefix that
-# does not serve it, and nothing here disagreed.
-#
-# The durable discriminator is not the version but WHICH openai line it is: the
-# hosted GPT models are served under /openai/v1, and the open-weight gpt-oss line
-# (gpt-oss-safeguard included) under bare /v1. Keyed that way a gpt-7 needs no edit.
-# 01-openai-gpt/01 §2 measures both prefixes for each openai model mantle lists in
-# the Region and prints the rows where this function disagrees with the service,
-# which is the check whose absence let the gpt-5 key survive.
+# The OpenAI family splits on mantle by line, not by generation: the hosted GPT
+# models are served under /openai/v1, and the open-weight gpt-oss line
+# (gpt-oss-safeguard included) under bare /v1. Keying on a generation such as
+# "openai.gpt-5" would send the next generation to /v1, where mantle answers
+# `model ... isn't supported on this route`.
 _OPENAI_HOSTED_GPT = "openai.gpt-"
 _OPENAI_OPEN_WEIGHT = "openai.gpt-oss"
 
@@ -104,10 +95,9 @@ def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
         api_prefix("openai.gpt-oss-20b-1:0", "runtime")  -> "/openai/v1"
         api_prefix("openai.gpt-6-astra")                 -> "/openai/v1"
 
-    Verified against both endpoints in us-east-1 on 2026-08-20, and re-measured for
-    the whole openai family in us-east-1 and us-west-2 on 9 Sep 2026 when GPT-6
-    Astra arrived. This is a lookup over measured behaviour, not a rule the service
-    guarantees: probe the model you actually intend to call.
+    Measured in us-east-1 and us-west-2 in September 2026. This is a lookup over
+    measured behaviour, not a rule the service guarantees: probe the model you
+    actually intend to call.
     """
     if endpoint not in ("mantle", "runtime"):
         raise ValueError(f"endpoint must be 'mantle' or 'runtime', got {endpoint!r}")
@@ -132,75 +122,18 @@ def host(region: str = DEFAULT_REGION) -> str:
     return f"https://bedrock-mantle.{region}.api.aws"
 
 
-def runtime_host(region: str = DEFAULT_REGION) -> str:
-    """Return the regional bedrock-runtime endpoint origin (scheme + host)."""
-    return f"https://bedrock-runtime.{region}.amazonaws.com"
-
-
-def base_url(model_id: str, region: str = DEFAULT_REGION) -> str:
-    """Base URL to hand to the OpenAI SDK for this model, on bedrock-mantle."""
-    return host(region) + api_prefix(model_id)
-
-
-def runtime_base_url(model_id: str, region: str = DEFAULT_REGION) -> str:
-    """Base URL to hand to the OpenAI SDK for this model, on bedrock-runtime."""
-    return runtime_host(region) + api_prefix(model_id, "runtime")
-
-
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 def token(region: str = DEFAULT_REGION) -> str:
     """Short-term Bedrock API key minted from the ambient IAM credentials.
 
-    Expires in <=12h and cannot be refreshed - mint a new one instead. See
-    00-foundations/01 for the self-refreshing provider and the SigV4 alternative.
+    Expires in <=12h and cannot be refreshed - mint a new one instead.
+    00-foundations/01 covers the key lifetime and the SigV4 alternative.
     """
     from aws_bedrock_token_generator import provide_token
 
     return provide_token(region=region)
-
-
-def client(model_id: str, region: str = DEFAULT_REGION):
-    """An OpenAI SDK client pointed at the right base URL for this model."""
-    from openai import OpenAI
-
-    return OpenAI(api_key=token(region), base_url=base_url(model_id, region))
-
-
-def anthropic_client(region: str = DEFAULT_REGION):
-    """An Anthropic SDK client pointed at bedrock-mantle."""
-    import anthropic
-
-    return anthropic.Anthropic(
-        api_key=token(region), base_url=host(region) + "/anthropic"
-    )
-
-
-def runtime_openai_client(model_id: str, region: str = DEFAULT_REGION):
-    """An OpenAI SDK client pointed at bedrock-runtime's OpenAI-compatible paths.
-
-    The endpoint AWS recommends for new applications. Remember that runtime wants
-    its own model ID, which is often not mantle's - runtime_id_for() maps it.
-    """
-    from openai import OpenAI
-
-    return OpenAI(
-        api_key=token(region), base_url=runtime_base_url(model_id, region)
-    )
-
-
-def runtime_anthropic_client(region: str = DEFAULT_REGION):
-    """An Anthropic SDK client pointed at bedrock-runtime's /anthropic path.
-
-    Name a `us.` or `global.` inference profile as the model; the bare Claude ID
-    is rejected here.
-    """
-    import anthropic
-
-    return anthropic.Anthropic(
-        api_key=token(region), base_url=runtime_host(region) + "/anthropic"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -232,13 +165,6 @@ DEFAULT_GEO = "us"
 # list_inference_profiles is a control-plane call; the answer changes only when
 # AWS adds models, so cache it per (region, geo) rather than per notebook cell.
 _PROFILE_CACHE: dict[tuple[str, str], set[str]] = {}
-
-
-def runtime_client(region: str = DEFAULT_REGION):
-    """A boto3 bedrock-runtime client (Converse, InvokeModel). SigV4 auth."""
-    import boto3
-
-    return boto3.client("bedrock-runtime", region_name=region)
 
 
 def control_client(region: str = DEFAULT_REGION):
@@ -299,12 +225,11 @@ def resolve_runtime_id(
         anthropic.claude-opus-5    -> eu.anthropic.claude-opus-5 (in eu-central-1)
         some-model-with-no-profile -> some-model-with-no-profile
 
-    `global.` is last and not a preference on purpose: `11-xai-grok/02` measures a
-    lower cache hit rate on `global.` than on `us.` for the same model, so reaching
-    for it while a regional profile exists would cost you.
+    `global.` is tried last: a regional profile keeps traffic in the geography,
+    and prompt-cache hits are more likely there than across every Region.
     """
     # Keep in step with the geo alternation used by api_prefix() and
-    # _norm_model_key(); "in" was missing here and nowhere else.
+    # _norm_model_key().
     if model_id.split(".", 1)[0] in {"us", "eu", "apac", "global", "in"}:
         return model_id  # already a profile ID
     profiles = inference_profiles(region)
@@ -321,21 +246,13 @@ def resolve_runtime_id(
         entry = None
     # No profile in the geo asked for. For a model the catalogue offers ON_DEMAND
     # the bare ID below is callable, so leave it alone. For one that it does not,
-    # the bare ID cannot work, and another profile in this Region can.
-    #
-    # Measured 18 Sep 2026, eu-central-1: moonshotai.kimi-k3 is
-    # INFERENCE_PROFILE-only and that Region carries global.moonshotai.kimi-k3
-    # and no eu. profile. This function used to fall through to the bare ID,
-    # which Converse refuses with "Invocation of model ID moonshotai.kimi-k3
-    # with on-demand throughput isn't supported", while us. there returns "The
-    # provided model identifier is invalid". The profile that works was already
-    # in the list this function had fetched.
+    # the bare ID is refused ("Invocation of model ID ... with on-demand throughput
+    # isn't supported"), and another profile in this Region can work: in
+    # eu-central-1, moonshotai.kimi-k3 has a global. profile and no eu. one.
     #
     # The other geos come from the Region's own profile list rather than a
     # region-to-geo table, so "apac" and "in" are found without being enumerated
-    # here, and global is tried last: eu-central-1 carries 21 eu. profiles beside
-    # its 20 global. ones, and preferring global over them would cost cache hits
-    # (measured in 11-xai-grok/02).
+    # here. global is tried last, for the reason in the docstring.
     if entry and "ON_DEMAND" not in (entry.get("id_infer") or entry.get("infer") or ()):
         others = sorted({p.split(".", 1)[0] for p in profiles} - {geo, "global"})
         for fallback_geo in others + ["global"]:
@@ -351,105 +268,34 @@ def resolve_runtime_id(
     return model_id
 
 
-def converse(
-    model_id: str,
-    messages: list[dict],
-    *,
-    region: str = DEFAULT_REGION,
-    system: str | None = None,
-    max_tokens: int = 512,
-    temperature: float | None = None,
-    tools: list[dict] | None = None,
-    resolve: bool = True,
-    **extra,
-) -> tuple[str, dict]:
-    """One Converse call. Returns (assistant_text, full_response).
-
-    `messages` uses the Converse shape, not the OpenAI shape:
-
-        [{"role": "user", "content": [{"text": "Hello"}]}]
-
-    Never raises on a service error: returns ("", {"error": ...}) so a notebook
-    can show what the service said instead of stopping the kernel. That matters
-    for the cells whose whole point is to demonstrate a rejected parameter.
-    """
-    from botocore.exceptions import ClientError
-
-    config: dict = {"maxTokens": max_tokens}
-    if temperature is not None:
-        config["temperature"] = temperature
-    kwargs: dict = {
-        "modelId": resolve_runtime_id(model_id, region) if resolve else model_id,
-        "messages": messages,
-        "inferenceConfig": config,
-        **extra,
-    }
-    if system:
-        kwargs["system"] = [{"text": system}]
-    if tools:
-        kwargs["toolConfig"] = {"tools": tools}
-    try:
-        response = runtime_client(region).converse(**kwargs)
-    except ClientError as exc:
-        return "", {
-            "error": {
-                "code": exc.response["Error"]["Code"],
-                "message": redact_account(exc.response["Error"]["Message"]),
-            }
-        }
-    except Exception as exc:
-        return "", {"error": {"message": f"{type(exc).__name__}: {exc}"}}
-    return converse_text(response), response
-
-
-def converse_text(response: dict) -> str:
-    """Concatenate the text blocks of a Converse response.
-
-    A response can carry reasoning and toolUse blocks alongside text, so index
-    [0] is not safe - walk the content list and take the text blocks.
-    """
-    blocks = (response.get("output") or {}).get("message", {}).get("content") or []
-    return "".join(b["text"] for b in blocks if "text" in b)
-
-
-def converse_tool_uses(response: dict) -> list[dict]:
-    """toolUse blocks from a Converse response, in order."""
-    blocks = (response.get("output") or {}).get("message", {}).get("content") or []
-    return [b["toolUse"] for b in blocks if "toolUse" in b]
-
-
 # --------------------------------------------------------------------------
 # Sample media.
 #
-# Vision and audio cells need an input. These two files are excerpts from a
-# public AWS talk, "AWS Summit Online ASEAN re:Cap 2020 | AI/ML: Cost-optimise
-# Your Machine Learning Pipeline (L300)" (AWS Events, 17 Nov 2020), presented by
-# the author of this repository:
+# Vision and audio cells need an input with a known answer, so each cell can
+# check what the model returned:
+#
+#     slide    ->  a labelled architecture diagram, for "read the title" and
+#                  "quote the callouts"
+#     clip     ->  seven seconds of speech, for "transcribe this"
+#     invoice  ->  a rendered invoice holding the same fields as the text
+#                  extraction examples, for "extract this image as JSON"
+#
+# The slide and the clip are excerpts from a public AWS talk, "AWS Summit Online
+# ASEAN re:Cap 2020 | AI/ML: Cost-optimise Your Machine Learning Pipeline (L300)"
+# (AWS Events, 17 Nov 2020), presented by the author of this repository:
 #
 #     https://www.youtube.com/watch?v=YjFI-n2YC7M
 #
-# An earlier version of this module generated solid colour bands instead. That
-# kept the repository free of binaries, but it could only ever test plumbing: a
-# model naming a colour does not show that OCR works, and there is no way to
-# synthesise intelligible speech from the standard library, so the audio cell
-# sent silence and could only check that the request shape was accepted.
-#
-# Real excerpts give each cell a KNOWN ANSWER that is worth checking:
-#
-#     slide  ->  a labelled architecture diagram, so "read the title" and "quote
-#                the callouts" are real OCR questions with verifiable answers
-#     clip   ->  seven seconds of speech, so "transcribe this" is a real
-#                transcription question with a verifiable answer
-#
-# Both are deliberately small (together under 64 KB) and are committed rather
-# than fetched, so the notebooks still run offline and the input cannot change
-# underneath a cell.
+# The invoice is synthetic, rendered for this repository. All three files are
+# small (75 KB together) and are committed rather than fetched, so the notebooks
+# run offline and the input cannot change underneath a cell.
 # --------------------------------------------------------------------------
 
 _ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 SLIDE_PATH = os.path.join(_ASSETS, "aws-summit-slide.jpg")
 CLIP_PATH = os.path.join(_ASSETS, "aws-summit-clip.mp3")
+INVOICE_PATH = os.path.join(_ASSETS, "invoice.png")
 
 # Ground truth for the slide, transcribed by hand from the frame itself.
 SLIDE_TITLE = "Ingestion from database"
@@ -458,8 +304,6 @@ SLIDE_CALLOUTS = (
     "Lower compute cost, up to 90%",
     "Lower storage cost for rarely accessed data",
 )
-# Words that appear in the slide's boxes, useful as a recall check on OCR.
-SLIDE_KEYWORDS = ("AWS Glue", "Amazon EMR", "Amazon S3", "spot instance", "Database")
 
 # Ground truth for the clip, transcribed by hand from the audio itself. The
 # speaker says this at 4:19 in the recording above.
@@ -473,6 +317,9 @@ CLIP_TRANSCRIPT = (
 # correct transcript.
 CLIP_KEYWORDS = ("save cost", "leveraging", "Amazon S3")
 
+# Ground truth for the invoice: the fields it was rendered from.
+INVOICE_FIELDS = {"invoice_id": "INV-1042", "vendor": "Acme Pty Ltd", "total": 1280.5, "currency": "AUD"}
+
 
 def slide_jpeg() -> bytes:
     """Raw JPEG bytes of the architecture slide. Converse takes these directly."""
@@ -483,6 +330,17 @@ def slide_jpeg() -> bytes:
 def slide_data_url() -> str:
     """The slide as a base64 data URL, the form the OpenAI-shaped APIs want."""
     return "data:image/jpeg;base64," + base64.b64encode(slide_jpeg()).decode()
+
+
+def invoice_png() -> bytes:
+    """Raw PNG bytes of the invoice. Converse takes these directly."""
+    with open(INVOICE_PATH, "rb") as handle:
+        return handle.read()
+
+
+def invoice_data_url() -> str:
+    """The invoice as a base64 data URL, the form the OpenAI-shaped APIs want."""
+    return "data:image/png;base64," + base64.b64encode(invoice_png()).decode()
 
 
 def clip_mp3() -> bytes:
@@ -513,50 +371,31 @@ def keyword_recall(answer: str, keywords: Sequence[str]) -> tuple[int, int]:
     return hits, len(keywords)
 
 
-def converse_reasoning(response: dict) -> str:
-    """Reasoning text from a Converse response, or "" if the model returned none.
-
-    Reasoning models put their trace in a `reasoningContent` block that sits
-    BEFORE the text block. With a small token budget you can get a response that
-    is reasoning-only, with no text block at all - moonshot.kimi-k2-thinking does
-    this below roughly 100 output tokens. So an empty converse_text() does not
-    mean the call failed; check this and the stopReason before concluding anything.
-    """
-    blocks = (response.get("output") or {}).get("message", {}).get("content") or []
-    parts = []
-    for block in blocks:
-        reasoning = block.get("reasoningContent")
-        if isinstance(reasoning, dict):
-            text = (reasoning.get("reasoningText") or {}).get("text")
-            if text:
-                parts.append(text)
-    return "".join(parts)
-
-
 _RUNTIME_CATALOGUE_CACHE: dict[str, dict[str, dict]] = {}
 # Remembers a FAILED catalogue call, so it is attempted once per Region rather than
 # once per lookup.
 _RUNTIME_CATALOGUE_FAILED: dict[str, str] = {}
+# The same pair for the bedrock-mantle catalogue, used by list_models().
+_MANTLE_CATALOGUE_CACHE: dict[str, list[str]] = {}
+_MANTLE_CATALOGUE_FAILED: dict[str, str] = {}
 
 
 def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
     """Serverless bedrock-runtime catalogue, keyed by model ID without the version.
 
-    Each value carries {"in", "out", "infer", "provider"}. Used by the
+    Each value carries {"in", "out", "infer", "provider"}, plus "id" and "id_infer"
+    for the callable variant and "variants" for all of them. Used by the
     endpoint-availability tables in the notebooks so the claims come from the
     service rather than from a hand-maintained list that ages.
 
     Cached per Region, like inference_profiles(). ListFoundationModels changes only
-    when AWS adds a model, and runtime_id_for() calls this once per lookup - an
+    when AWS adds a model, and runtime_id_for() calls this once per lookup, so an
     uncached version turns a 40-model table into 40 control-plane calls.
     """
     if region in _RUNTIME_CATALOGUE_CACHE:
         return _RUNTIME_CATALOGUE_CACHE[region]
-    # A FAILURE was not remembered, only a success, so a caller without
-    # bedrock:ListFoundationModels made one failing control-plane call per lookup --
-    # 41 for a 40-row table, each waiting on the SDK's own retries. That is exactly
-    # the cost the caching note above says this cache exists to avoid. Remember the
-    # failure too, and re-raise the same error for every later caller.
+    # Remember a failure too (for example, no bedrock:ListFoundationModels), so a
+    # 40-row table makes one failing call rather than 40, each with SDK retries.
     if region in _RUNTIME_CATALOGUE_FAILED:
         raise RuntimeError(_RUNTIME_CATALOGUE_FAILED[region])
     out: dict[str, dict] = {}
@@ -589,11 +428,8 @@ def runtime_models(region: str = DEFAULT_REGION) -> dict[str, dict]:
 
     # One catalogue key can carry several model IDs, and they do NOT share
     # inference types: the `:0:24k` and `:0:300k` Nova entries are PROVISIONED-only
-    # context-window SKUs while the plain `:0` entry is the on-demand one. Keeping
-    # the FIRST-SEEN id while unioning `infer` across variants produced an entry
-    # claiming ON_DEMAND under an ID that only supports PROVISIONED, so
-    # runtime_id_for("amazon.nova-lite-v1") returned `amazon.nova-lite-v1:0:24k`
-    # and Converse answered "Model not found." 12 keys in us-east-1 have this shape.
+    # context-window SKUs while the plain `:0` entry is the on-demand one. Converse
+    # answers "Model not found." for the PROVISIONED-only IDs.
     #
     # So choose the variant that is actually callable: on-demand first, then
     # profile-addressable, then whatever came first. Among equals prefer the
@@ -626,14 +462,13 @@ def _norm_model_key(value: str) -> str:
         "-instruct" tail   qwen.qwen3-next-80b-a3b-instruct vs ...-a3b
 
     The delicate part is the trailing "-1" in `openai.gpt-oss-20b-1:0`, which is a
-    version and must go. Stripping ANY trailing "-<digit>" is what an earlier
-    version of this function did, and it silently mapped
-    `anthropic.claude-sonnet-5` onto `anthropic.claude-sonnet-4-...` because both
-    collapsed to `anthropic.claude-sonnet`. Model generations live in those digits.
+    version and must go. Stripping ANY trailing "-<digit>" would map
+    `anthropic.claude-sonnet-5` onto `anthropic.claude-sonnet-4-...`, because both
+    collapse to `anthropic.claude-sonnet`. Model generations live in those digits.
 
     So the trailing "-<digit>" is only removed when it looks like a *version*: the
-    ID carried a ":<n>" suffix and no embedded release date. `claude-sonnet-4-2025
-    0514-v1:0` has the date, so its "-4" is kept; `gpt-oss-20b-1:0` has no date, so
+    ID carried a ":<n>" suffix and no embedded release date.
+    `claude-sonnet-4-20250514-v1:0` has the date, so its "-4" is kept; `gpt-oss-20b-1:0` has no date, so
     its "-1" goes.
     """
     value = re.sub(r"^(us|eu|apac|global|in)\.", "", value)
@@ -641,9 +476,8 @@ def _norm_model_key(value: str) -> str:
     value = value.split(":")[0]
     # A "-vN" tail IS the version marker, so any digit before it belongs to the model
     # generation. Without this flag, `anthropic.claude-opus-4-7-v1:0` and
-    # `...-4-8-v1:0` both collapsed to `anthropic.claude-opus-4` -- the very
-    # collision the paragraph above says this function prevents -- and
-    # `zai.glm-5-v1:0` collapsed to `zai.glm`.
+    # `...-4-8-v1:0` would both collapse to `anthropic.claude-opus-4`, and
+    # `zai.glm-5-v1:0` to `zai.glm`.
     had_v_suffix = re.search(r"-v\d+$", value) is not None
     value = re.sub(r"-v\d+$", "", value)
     dated = re.search(r"-\d{8}$", value) is not None
@@ -660,13 +494,10 @@ _WARNED: set[str] = set()
 def _warn_once(key: str, message: str) -> None:
     """Print a degradation notice once per process.
 
-    A control-plane failure used to be converted into a confident negative:
-    without `bedrock:ListFoundationModels`, endpoints_for() answered
-    {"mantle": False, "runtime": False} for every model and the notebooks printed
-    "not on runtime" for all of them as though it were a finding. Both helpers
-    failed the same way, so the notebooks' contradiction cross-check stayed silent.
-    Printing makes the degraded answer visible in committed output, which is where
-    a reader would otherwise trust it.
+    Used when a catalogue call fails, for example without
+    `bedrock:ListFoundationModels` or `bedrock:ListInferenceProfiles`. endpoints_for(),
+    runtime_id_for() and inference_profiles() then fall back to a degraded answer,
+    and the notice says so, so that answer is not read as "the model is absent".
     """
     if key in _WARNED:
         return
@@ -679,7 +510,7 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
 
     Ask this before writing code against a model. The same model can carry
     DIFFERENT IDs on the two endpoints - `openai.gpt-oss-120b` on mantle is
-    `openai.gpt-oss-120b-1` on runtime - so this compares on a normalised key.
+    `openai.gpt-oss-120b-1:0` on runtime - so this compares on a normalised key.
     """
     target = _norm_model_key(model_id)
     try:
@@ -695,21 +526,14 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
     try:
         # Compare against entry["id"], NOT the dict key. runtime_models() keys off
         # modelId.split(":")[0], so the key for `openai.gpt-oss-20b-1:0` is
-        # `openai.gpt-oss-20b-1` -- the version marker is already gone, and
-        # _norm_model_key can no longer tell the trailing "-1" is a version. This
-        # function iterated the keys and therefore reported gpt-oss as absent from
-        # bedrock-runtime while runtime_id_for(), which uses entry["id"], mapped it
-        # correctly. Two helpers disagreeing about one model is how a wrong row
-        # reaches a table.
+        # `openai.gpt-oss-20b-1`: the ":0" is gone, and _norm_model_key cannot tell
+        # that the trailing "-1" is a version. runtime_id_for() compares the same way.
         on_runtime = any(
             _norm_model_key(entry["id"]) == target
             for entry in runtime_models(region).values()
         )
     except Exception as exc:
-        # Same treatment as the mantle branch above. Without this the runtime half
-        # failed SILENTLY while only mantle announced itself, so a missing
-        # bedrock:ListFoundationModels printed "-- not on runtime --" on every row
-        # and the notebooks' contradiction cross-check saw nothing to contradict.
+        # Same treatment as the mantle branch above.
         _warn_once(
             f"endpoints_for:{region}",
             f"could not list bedrock-runtime models in {region} "
@@ -735,23 +559,13 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
     Returns None when the model is not on runtime at all, so callers get an
     explicit "not there" rather than a guessed ID that 400s later.
 
-    Caveat worth knowing: this answers for Converse, InvokeModel and the
-    /openai/v1 paths. The /anthropic/v1/messages surface on bedrock-runtime is
-    stricter, and NOT in a way any ID shape predicts. Measured 7 Sep 2026 over all
-    41 Claude IDs on runtime: every model that serves Messages also serves Converse,
-    four serve Converse only, and four very old ones serve neither -- so the
-    Messages-capable set is a strict SUBSET of the Converse-capable set, and it is not
-    the short-ID ones. `us.anthropic.claude-sonnet-4-6`
-    and `us.anthropic.claude-opus-4-6-v1` are short profile IDs that 404 on Messages,
-    while `us.anthropic.claude-haiku-4-5-20251001-v1:0` -- dated, and documented here
-    for weeks as the example of one that 404s -- now answers 200.
-
-    So this docstring used to state a rule ("serves only the Claude models whose
-    inference profile carries no date") that was inferred from one counter-example and
-    is now false in both directions. Reach for Converse on runtime unless you need a
-    Messages-only feature, and probe the model you actually intend to call.
-    `00-foundations/04` measures the subset live and
-    `capabilities.RUNTIME_MESSAGES_CLAUDE` records what it found.
+    This answers for Converse, InvokeModel and the /openai/v1 paths. The
+    /anthropic/v1/messages surface on bedrock-runtime serves a smaller set of Claude
+    models, and no ID shape predicts which: as of September 2026,
+    `us.anthropic.claude-sonnet-4-6` returns 404 on Messages while
+    `us.anthropic.claude-haiku-4-5-20251001-v1:0` returns 200. Use Converse on
+    runtime unless you need a Messages-only feature, and probe the model you intend
+    to call.
     """
     try:
         catalogue = runtime_models(region)
@@ -768,7 +582,7 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
 
     def _addressable(entry: dict) -> str:
         # The chosen variant's OWN types, not the union across variants: the union
-        # is what made a PROVISIONED-only ID look on-demand callable.
+        # can include ON_DEMAND from a sibling while this ID is PROVISIONED-only.
         if "ON_DEMAND" in (entry.get("id_infer") or entry["infer"]):
             return entry["id"]
         # INFERENCE_PROFILE-only: the bare ID is refused outright.
@@ -776,8 +590,7 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
 
     bare = re.sub(r"^(us|eu|apac|global|in)\.", "", model_id)
 
-    # Exact first. Normalisation is lossy by design, so trying it before an exact
-    # match is how `anthropic.claude-sonnet-5` once resolved to sonnet-4.
+    # Exact first. Normalisation is lossy by design, so an exact match must win.
     for entry in catalogue.values():
         if entry["id"] == bare or entry["id"].split(":")[0] == bare:
             return _addressable(entry)
@@ -798,14 +611,12 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
 # only knows 500-504 gives up on a retryable blip.
 _TRANSIENT = {429, 500, 502, 503, 504, 529}
 
-# Observed behaviour: mantle sometimes reports a SERVER fault with a 4xx status and
-# the body "Internal server error". Status alone therefore misclassifies it as a
-# permanent client error, and a status-only retry policy gives up on a blip that
-# succeeds immediately afterwards. Reproduced against a request that returned
-# `400 Internal server error` once and then 200 on the next three attempts.
+# mantle sometimes reports a SERVER fault with a 4xx status and the body
+# "Internal server error", and the same request succeeds on the next attempt.
+# Status alone misclassifies it as a permanent client error.
 #
 # So: retry a 4xx ONLY when the body says the server failed. Never widen this to
-# all 400s -- a genuine "unsupported parameter" 400 must fail fast (S15-C17).
+# all 400s: a genuine "unsupported parameter" 400 must fail fast.
 _SERVER_FAULT_TEXT = ("internal server error", "internal failure", "internal error")
 
 
@@ -815,12 +626,9 @@ def _is_retryable(status: int, payload: dict) -> bool:
         return True
     if 400 <= status < 500:
         # Match over the WHOLE serialised body, not err()'s extracted message.
-        # err() reads error.message and truncates, so two real bodies were missed:
-        # {"message": "Bad request", "details": "internal server error while
-        # validating"} -- the marker is in a sibling field -- and any body whose
-        # error.message carries the marker past the truncation limit. The copy of
-        # this policy in 99-cross-cutting/03 matched the full body, so the library
-        # and the notebook a reader copies disagreed on the same input.
+        # err() reads error.message and truncates, which misses a marker in a
+        # sibling field ({"message": "Bad request", "details": "internal server
+        # error while validating"}) or past the truncation limit.
         #
         # json.dumps on an arbitrary payload can still fail (a set, bytes), and this
         # runs inside post()'s HTTPError handler where raising would turn the
@@ -917,8 +725,8 @@ def post(
 #
 # So `if resp.status_code == 200:` reads a missing route as a success. This is not
 # hypothetical: the Chat Completions user-guide page shows a runtime base URL of
-# ".../v1" (rather than ".../openai/v1"), and that URL produces exactly this body
-# for every model ID we tried. Check the body, not only the status.
+# ".../v1" (rather than ".../openai/v1"), and that URL returns this body for
+# every model ID. Check the body, not only the status.
 # ---------------------------------------------------------------------------
 def unknown_op(payload: dict) -> bool:
     """True when a body is a Coral UnknownOperationException, whatever the status."""
@@ -930,96 +738,17 @@ def ok(status: int, payload: dict) -> bool:
     return status == 200 and not unknown_op(payload)
 
 
-def runtime_post(
-    path: str,
-    body: dict | None,
-    *,
-    region: str = DEFAULT_REGION,
-    headers: dict | None = None,
-    method: str = "POST",
-    attempts: int = 5,
-    timeout: int = 240,
-) -> tuple[int, dict]:
-    """Like post(), but against bedrock-runtime's /openai/v1 and /anthropic/v1.
-
-    Bearer-token auth, so it works with a Bedrock API key exactly as the OpenAI
-    SDK does. Never raises: returns (status, body). Pair it with ok() rather than
-    testing the status alone - see the note above on UnknownOperationException.
-    """
-    url = runtime_host(region) + path
-    data = json.dumps(body).encode() if body is not None else None
-    for attempt in range(attempts):
-        hdrs = {
-            "Authorization": f"Bearer {token(region)}",
-            "Content-Type": "application/json",
-        }
-        if headers:
-            hdrs.update(headers)
-        req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
-        try:
-            with _open_https(req, timeout) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-                return resp.status, (json.loads(raw) if raw.strip() else {})
-        except urllib.error.HTTPError as e:
-            raw = e.read().decode("utf-8", "replace")
-            try:
-                parsed = json.loads(raw) if raw.strip() else {}
-            except json.JSONDecodeError:
-                parsed = {"raw": raw[:500]}
-            if _is_retryable(e.code, parsed) and attempt < attempts - 1:
-                # Retry jitter, not a security decision.
-                time.sleep(
-                    min(2**attempt, 16) + random.random()  # nosec B311  # noqa: S311
-                )
-                continue
-            return e.code, parsed
-        except Exception as e:  # timeouts, connection resets
-            if attempt < attempts - 1:
-                # Retry jitter, not a security decision.
-                time.sleep(
-                    min(2**attempt, 16) + random.random()  # nosec B311  # noqa: S311
-                )
-                continue
-            return -1, {"error": {"message": f"{type(e).__name__}: {e}"}}
-    return -1, {"error": {"message": "retries exhausted"}}
-
-
-def stream_lines(
-    path: str,
-    body: dict,
-    *,
-    region: str = DEFAULT_REGION,
-    headers: dict | None = None,
-    timeout: int = 240,
-):
-    """Yield raw SSE lines from a streaming endpoint (no SDK)."""
-    hdrs = {
-        "Authorization": f"Bearer {token(region)}",
-        "Content-Type": "application/json",
-    }
-    if headers:
-        hdrs.update(headers)
-    req = urllib.request.Request(
-        host(region) + path, data=json.dumps(body).encode(), headers=hdrs, method="POST"
-    )
-    with _open_https(req, timeout) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8", "replace").rstrip("\n")
-            if line:
-                yield line
-
-
 # Opaque service identifiers that appear in error text. They are not credentials,
 # but they are long, high-entropy, and account-scoped: printing them in full adds
 # nothing for a reader and trips secret scanners on committed notebook output.
-_OPAQUE_ID = re.compile(r"\b((?:resp|msg|file|ft|proj|batch)[_-][A-Za-z0-9]{12,})\b")
+_OPAQUE_ID = re.compile(r"\b((?:resp|req|msg|file|ft|proj|batch)[_-][A-Za-z0-9]{12,})\b")
 
 
 def redact_ids(text: str, keep: int = 8) -> str:
     """Shorten opaque service IDs in a string, keeping enough to correlate a log.
 
-    `resp_7jn3u5e6th46bypynamj6dc7rdoptjtjvmqf5bdlpe45e26phlfa`
-        -> `resp_7jn3u5e6...`
+    `resp_example00000000000000000000000000000000`
+        -> `resp_example0...`
     """
 
     def _shorten(m: re.Match) -> str:
@@ -1058,12 +787,8 @@ def safe_print(*parts: object) -> None:
 
     Use it for anything derived from STS, an ARN, or a control-plane response.
 
-    This applies BOTH redactions. An earlier version applied only
-    redact_account(), which meant a caller who reached for the "safe" printer
-    still committed full `proj_*` and `resp_*` identifiers to a public
-    repository - the exact thing redact_ids() exists to prevent. Splitting the
-    two made the safe path incomplete, so they are combined here rather than
-    left to the call site to remember.
+    It applies both redact_account() and redact_ids(), so the call site does not
+    have to remember either.
     """
     print(*(redact_account(redact_ids(str(p))) for p in parts))
 
@@ -1075,15 +800,12 @@ def err(payload: dict, limit: int = 160) -> str:
     account IDs, IAM principals, and opaque IDs before returning. Notebook output is
     committed to a public repository; anything printed there is published.
 
-    Every container access is guarded because `post()` promises never to raise, and
-    dozens of cells exist precisely to *show* a 400. A body of
-    `{"error": "Internal server error"}` -- a string rather than an object, and the
-    very shape `_SERVER_FAULT_TEXT` exists to detect -- used to raise
-    `AttributeError` here and kill the kernel. A JSON array body did the same.
+    Every container access is guarded because `post()` promises never to raise:
+    `{"error": "Internal server error"}` (a string, not an object) and a JSON array
+    body both come back as text.
 
-    `limit` truncates for display. Callers that MATCH on the text (the self-healing
-    retries in 99-cross-cutting) must pass a limit large enough to contain the
-    parameter name, which can sit past character 160.
+    `limit` truncates for display. Callers that MATCH on the text must pass a limit
+    large enough to contain what they look for, which can sit past character 160.
     """
     if not isinstance(payload, dict):
         return redact_account(redact_ids(json.dumps(payload)))[:limit]
@@ -1105,34 +827,31 @@ def list_models(region: str = DEFAULT_REGION) -> list[str]:
     """Model inventory on bedrock-mantle, which is the endpoint that serves one.
 
     `GET /v1/models` here, and GET-only: a POST to it is 405. `/openai/v1/models`
-    is 404 on mantle. bedrock-runtime served neither path when this was measured,
-    in the three Regions swept by 00-foundations/01 section 6, so this helper is
-    mantle-shaped on purpose; discovery there is ListFoundationModels and
+    is 404 on mantle, and bedrock-runtime serves neither path, so this helper is
+    mantle-only; discovery on runtime is ListFoundationModels and
     ListInferenceProfiles, wrapped by runtime_models() and inference_profiles()
     above.
 
-    Note for anyone tempted to point this at runtime: how it fails depends on the
-    verb. The GET below gets 404 there and raises, which is loud. Drop the
-    `method="GET"` and it becomes a POST with no body, which runtime answers with
-    HTTP 200 and a Coral SerializationException: the `code != 200` check passes and
-    `payload.get("data", [])` returns [], so the Region reads as having no models
-    rather than as unreachable. Worth knowing that this particular fault is the one
-    shape unknown_op() does not match, since it names serialization rather than the
-    operation - no caller passes a None body today, so nothing reaches it. Measured
-    19 Sep 2026 in us-east-1; 00-foundations/01 section 6 prints the sweep.
+    Pointed at runtime, the GET below gets 404 and raises. A POST with no body
+    would instead get HTTP 200 and a Coral SerializationException, which reads as
+    a Region with no models, so keep `method="GET"`.
+
+    Cached per Region: a setup cell that calls endpoints_for() for eight models makes
+    one catalogue call. A refusal such as 403 is cached too, so it is not repeated per
+    model. Anything _is_retryable() calls transient is not cached, so the next call
+    tries again -- including a 4xx whose body reports an internal server error.
     """
-    code, payload = post("/v1/models", None, region=region, method="GET")
-    if code != 200:
-        raise RuntimeError(f"list_models failed {code}: {err(payload)}")
-    return sorted(m["id"] for m in payload.get("data", []))
-
-
-def families(region: str = DEFAULT_REGION) -> dict[str, list[str]]:
-    """Group the model inventory by provider prefix, e.g. {"google": [...]}."""
-    out: dict[str, list[str]] = {}
-    for mid in list_models(region):
-        out.setdefault(mid.split(".")[0], []).append(mid)
-    return out
+    if region in _MANTLE_CATALOGUE_FAILED:
+        raise RuntimeError(_MANTLE_CATALOGUE_FAILED[region])
+    if region not in _MANTLE_CATALOGUE_CACHE:
+        code, payload = post("/v1/models", None, region=region, method="GET")
+        if code != 200:
+            message = f"list_models failed {code}: {err(payload)}"
+            if not _is_retryable(code, payload if isinstance(payload, dict) else {}):
+                _MANTLE_CATALOGUE_FAILED[region] = message
+            raise RuntimeError(message)
+        _MANTLE_CATALOGUE_CACHE[region] = sorted(m["id"] for m in payload.get("data", []))
+    return list(_MANTLE_CATALOGUE_CACHE[region])
 
 
 def response_text(payload: dict) -> str:
@@ -1152,19 +871,12 @@ def response_text(payload: dict) -> str:
     return "".join(parts)
 
 
-def function_calls(payload: dict) -> list[dict]:
-    """Function-call items from a Responses payload."""
-    items = payload.get("output") or []
-    return [i for i in items if i.get("type") == "function_call"]
-
-
 def parse_json_lenient(text: str) -> dict:
     """Parse the first complete JSON object out of model output.
 
     Some models append trailing characters after a well-formed object even in
-    "strict" structured-output mode (Gemma 4 does this intermittently - see
-    03-google-gemma/01). Plain json.loads() then raises even though the useful
-    payload is intact. This walks braces to find the first balanced object and
+    "strict" structured-output mode (Gemma 4 does this intermittently). Plain
+    json.loads() then raises even though the useful payload is intact. This walks braces to find the first balanced object and
     parses that.
     """
     text = (text or "").strip()
@@ -1261,17 +973,10 @@ def _dedent_block(body: str) -> str:
 def _is_info_string(rest: str) -> bool:
     """Is the text after a fence marker an info string, or the rest of a sentence?
 
-    This distinction is the whole reliability of extract_code_block, and it has been
-    got wrong three times:
-
-      1. Matching a bare language tag left "python title=x" in the source, and
-         inspect_code() reported a syntax error on correct model output.
-      2. Anchoring the fence to column 0 rejected an indented fence, which is what a
-         model emits under a numbered list -- so the whole markdown came back.
-      3. Allowing any text after the marker let a prose line that merely STARTS with
-         an inline span open the match: "``` is the fence marker. Here is the code:"
-         swallowed the real block and returned an empty string. Restricting the
-         character set then rejected the legitimate "python title=x" from (1).
+    extract_code_block depends on this. It must accept "python title=x" and an
+    indented fence (what a model emits under a numbered list), and reject a prose
+    line that merely starts with a marker, such as "``` is the fence marker. Here
+    is the code:".
 
     A CommonMark info string is short and word-like. A sentence has sentence
     punctuation and more words. That is the discriminator.
@@ -1301,10 +1006,10 @@ def extract_code_block(markdown: str) -> str:
     closer = _FENCE_LINE.search(after)
     if closer is not None:
         return _dedent_block(after[:closer.start()])
-    # No closing fence: a truncated generation. Returning the whole string kept the
-    # ```python line in the source, so inspect_code() reported "SyntaxError line 1"
-    # and the model was blamed for the truncation.
+    # No closing fence: a truncated generation. Return what came after the opener,
+    # so the ```python line does not reach inspect_code() as a syntax error.
     return _dedent_block(after)
+
 
 def inspect_code(source: str) -> dict:
     """Statically analyse generated Python. Never executes it.
@@ -1341,18 +1046,14 @@ def inspect_code(source: str) -> dict:
         return out
 
     out["parses"] = True
-    # TOP-LEVEL defs and classes only, from tree.body rather than ast.walk. Walking
-    # the whole tree reported methods as module-level functions, so a model that
-    # wrapped the required function in a class scored a pass on check_spec() while
-    # `from module import parse_config` would raise NameError. Methods are still
-    # reported, under their own key, so a caller can tell the two apart.
+    # TOP-LEVEL defs and classes only, from tree.body rather than ast.walk, so a
+    # method is not mistaken for an importable function. Methods are reported under
+    # their own key, so a caller can tell the two apart.
     def _params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
         """Every parameter name, in call order.
 
-        `args + kwonlyargs` alone dropped positional-only parameters, `*rest` and
-        `**kw`. `check_spec(params=["path", "strict"])` then failed a model that had
-        written `def parse_config(path, /, strict=False)` correctly -- and failed it
-        with an empty `reason`, so the notebook printed a bare False.
+        Includes positional-only parameters, `*rest` and `**kw`, so
+        `def parse_config(path, /, strict=False)` reports ["path", "strict"].
         """
         a = fn.args
         names = [p.arg for p in (*a.posonlyargs, *a.args)]
@@ -1367,9 +1068,7 @@ def inspect_code(source: str) -> dict:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             out["functions"][node.name] = _params(node)
         elif isinstance(node, ast.ClassDef):
-            # Top-level classes only -- the docstring says so, and collecting these
-            # with ast.walk instead reported a class nested inside a function as
-            # top-level, which is the same fault the defs above were fixed for.
+            # Top-level classes only, for the same reason as the defs above.
             out["classes"].append(node.name)
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1381,10 +1080,8 @@ def inspect_code(source: str) -> dict:
         elif isinstance(node, ast.ImportFrom):
             out["imports"].append((node.module or "").split(".")[0])
         elif isinstance(node, ast.Raise):
-            # `raise json.JSONDecodeError(...)` and `raise exc.ValidationError(...)`
-            # recorded NOTHING, because only `.id` was read -- an ast.Attribute has
-            # `.attr`. The Call branch below already handled both; this one did not,
-            # so check_spec(raises=...) failed correct code with "raises nothing".
+            # Read `.attr` as well as `.id`, so `raise json.JSONDecodeError(...)` and
+            # `raise exc.ValidationError(...)` are recorded.
             exc_node = node.exc
             called = getattr(exc_node, "func", None)
             name = (
@@ -1411,25 +1108,21 @@ def check_spec(
 ) -> dict:
     """Score generated code against a specification, statically.
 
-    Returns {"parses", "defines", "signature", "guard", "ok"} - each a bool
+    Returns {"parses", "defines", "signature", "guard", "ok", "reason"}: each a bool
     except the reason string. `params` is the expected parameter-name list;
     `raises` an exception type the code must raise somewhere.
     """
     info = inspect_code(source)
     defines = function in info["functions"]
-    # Compare the NAMED parameters, ignoring `*args` / `**kwargs`. Adding those to
-    # the list (correctly, they are part of the signature) broke the `==` comparison
-    # for spec-compliant code: `def chunk_by_tokens(text, max_tokens, overlap=50,
-    # **kwargs)` meets a spec of ["text","max_tokens","overlap"], and the previous
-    # round reported signature=False for it. A spec names the parameters a caller
+    # Compare the NAMED parameters, ignoring `*args` / `**kwargs`:
+    # `def chunk_by_tokens(text, max_tokens, overlap=50, **kwargs)` meets a spec of
+    # ["text", "max_tokens", "overlap"]. A spec names the parameters a caller
     # passes; extra catch-alls do not violate it.
     actual = [a for a in info["functions"].get(function, [])
               if not a.startswith("*")]
     signature = defines and (params is None or actual == list(params))
     guard = raises is None or raises in info["raises"]
-    # Say WHICH check failed. `reason` used to be empty whenever the function existed,
-    # so a signature or guard mismatch printed a bare False and the notebook gave the
-    # reader nothing to act on. An unexplained failure is worse than no check.
+    # Say WHICH check failed, so a notebook can print something the reader can act on.
     if info["error"]:
         reason = info["error"]
     elif not defines:
@@ -1460,75 +1153,3 @@ def check_spec(
     }
 
 
-def ttft(
-    path: str,
-    body: dict,
-    *,
-    region: str = DEFAULT_REGION,
-    headers: dict | None = None,
-    timeout: int = 120,
-    deadline_s: float = 180.0,
-) -> dict:
-    """Time a streaming call: time-to-first-token and output frames/sec.
-
-    Counts SSE data frames as a proxy for tokens - good enough to compare
-    service tiers and models against each other, not an exact token count.
-
-    Never raises: a request that a model rejects (e.g. an unsupported
-    service_tier) or that stalls returns an "error" key instead, so a
-    benchmarking loop over many models/tiers always completes.
-
-    `timeout` is urllib's, which applies PER SOCKET OPERATION, not to the whole
-    call - a stream that keeps dribbling bytes can therefore run far past it.
-    `deadline_s` is the total wall-clock cap and it is the one that actually
-    bounds this function. Without it, a `service_tier="flex"` request that sits
-    queued can hang a notebook cell indefinitely: one did, for 1500s, which
-    aborted a full run.
-    """
-    body = {**body, "stream": True}
-    start = time.perf_counter()
-    first = None
-    frames = 0
-    try:
-        for line in stream_lines(
-            path, body, region=region, headers=headers, timeout=timeout
-        ):
-            if time.perf_counter() - start > deadline_s:
-                return {
-                    "ttft_s": round(first or 0, 3),
-                    "total_s": round(time.perf_counter() - start, 3),
-                    "frames": frames,
-                    "frames_per_s": 0.0,
-                    "error": f"exceeded {deadline_s}s wall clock",
-                }
-            if not line.startswith("data:"):
-                continue
-            if line.strip() == "data: [DONE]":
-                break
-            frames += 1
-            if first is None:
-                first = time.perf_counter() - start
-    except urllib.error.HTTPError as e:
-        return {
-            "ttft_s": 0.0,
-            "total_s": 0.0,
-            "frames": 0,
-            "frames_per_s": 0.0,
-            "error": f"HTTP {e.code}",
-        }
-    except Exception as e:
-        return {
-            "ttft_s": 0.0,
-            "total_s": 0.0,
-            "frames": 0,
-            "frames_per_s": 0.0,
-            "error": type(e).__name__,
-        }
-    total = time.perf_counter() - start
-    gen = max(total - (first or 0), 1e-6)
-    return {
-        "ttft_s": round(first or 0, 3),
-        "total_s": round(total, 3),
-        "frames": frames,
-        "frames_per_s": round(frames / gen, 1),
-    }

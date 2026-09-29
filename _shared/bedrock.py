@@ -506,11 +506,21 @@ def _warn_once(key: str, message: str) -> None:
 
 
 def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool]:
-    """Which endpoints serve this model: {"mantle": bool, "runtime": bool}.
+    """Which endpoints list this model: {"mantle": bool, "runtime": bool}.
 
     Ask this before writing code against a model. The same model can carry
     DIFFERENT IDs on the two endpoints - `openai.gpt-oss-120b` on mantle is
     `openai.gpt-oss-120b-1:0` on runtime - so this compares on a normalised key.
+
+    Both answers are catalogue reads, so a False means "not listed", which is not
+    the same as "not served". On 29 September 2026 in us-east-1 the mantle
+    catalogue alternated between two snapshots of equal length, and
+    `openai.gpt-6.1-sol` and `openai.gpt-6-astra-minor` each appeared in only some
+    reads while both answered a Responses call with HTTP 200. list_models() caches
+    per Region, so whichever snapshot the first read landed on is the one every
+    later call in the session sees. Confirm a False by calling the model: on mantle
+    404 `The model '...' does not exist` is the endpoint's own answer.
+    See 00-foundations/01, section 6.
     """
     target = _norm_model_key(model_id)
     try:
@@ -840,6 +850,13 @@ def list_models(region: str = DEFAULT_REGION) -> list[str]:
     one catalogue call. A refusal such as 403 is cached too, so it is not repeated per
     model. Anything _is_retryable() calls transient is not cached, so the next call
     tries again -- including a 4xx whose body reports an internal server error.
+
+    The cache makes one read authoritative for the session, which matters because a
+    read is not guaranteed to be stable: see endpoints_for() for a dated case where
+    successive reads of this catalogue disagreed about two models the endpoint served.
+    The response carries no pagination cursor, so a short list is a different snapshot
+    rather than a truncated page. Call the model to settle an absence; do not infer one
+    from this list alone.
     """
     if region in _MANTLE_CATALOGUE_FAILED:
         raise RuntimeError(_MANTLE_CATALOGUE_FAILED[region])

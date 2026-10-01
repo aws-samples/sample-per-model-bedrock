@@ -67,8 +67,8 @@ and each family notebook:
 
 - **Model IDs differ per endpoint.** `openai.gpt-oss-20b` on `bedrock-mantle` is
   `openai.gpt-oss-20b-1:0` on `bedrock-runtime`, and many models on `bedrock-runtime`
-  (Claude, the hosted GPT models, Grok 4.6, Kimi K3, Nova 2 Lite, Palmyra X4 and X5,
-  Llama 4) are called through an inference profile with a `us.` or `global.` prefix. The
+  (Claude, the hosted GPT models, Grok 4.6 and 4.7, Kimi K3, Nova 2 Lite, Palmyra X4 and
+  X5, Llama 4) are called through an inference profile with a `us.` or `global.` prefix. The
   wrong ID gives *"The provided model identifier is invalid"* or *"on-demand throughput
   isn't supported"*, which reads like a missing model. `runtime_id_for()` translates;
   `endpoints_for()` says which endpoints serve a model at all.
@@ -89,7 +89,7 @@ key, as the OpenAI and Anthropic SDKs do, also needs `bedrock:CallWithBearerToke
 `bedrock-runtime` and `bedrock-mantle:CallWithBearerToken` on `bedrock-mantle`.
 Discovery cells also need `bedrock:ListFoundationModels` and
 `bedrock:ListInferenceProfiles`. The Responses API on `bedrock-runtime`, used by the
-hosted GPT models and Grok 4.6, is authorised against the inference profile, the
+hosted GPT models and Grok 4.6 and 4.7, is authorised against the inference profile, the
 foundation model in each Region the profile routes to, and the account's default project
 (`arn:aws:bedrock:{region}:{account-id}:project/default`), so allow
 `bedrock:InvokeModel` on all three;
@@ -112,7 +112,7 @@ Open one folder. Each notebook is self-contained.
 | [`08-moonshot-kimi/`](08-moonshot-kimi/) | kimi-k2.5, kimi-k2-thinking · kimi-k3 | k2 both · k3 **runtime** (profile-only) | Chat Completions · k3 also Responses | Reasoning, tools, structured output, Converse, Kimi K3 |
 | [`09-minimax/`](09-minimax/) | minimax-m2.5, m2.1, m2 | both | Chat Completions | Reasoning, tools, structured output, Converse |
 | [`10-nvidia-nemotron/`](10-nvidia-nemotron/) | nemotron-super-3-120b, nano 9b/12b/30b | both | Chat Completions | Reasoning, tools, structured output, vision with Nano 12B v2, Converse |
-| [`11-xai-grok/`](11-xai-grok/) | grok-4.6 · grok-4.3 | 4.6 **both** (runtime: profile-only; mantle: `us-west-2` only) · 4.3 **mantle** | Responses · Chat Completions · Converse | Reasoning, server-side state, tools, structured output, vision · Grok 4.6 also Converse and background mode |
+| [`11-xai-grok/`](11-xai-grok/) | grok-4.7 · grok-4.6 · grok-4.3 | 4.7 **runtime** (profile-only) · 4.6 **both** (runtime: profile-only; mantle: `us-west-2` only) · 4.3 **mantle** | Responses · Chat Completions · Converse | Reasoning, server-side state, tools, structured output, vision · 4.6 and 4.7 also Converse · 4.6 also background mode |
 | [`12-writer-palmyra/`](12-writer-palmyra/) | palmyra-vision-7b · palmyra-x4 · palmyra-x5 | vision both · x4/x5 **runtime** | Chat Completions · Converse | Vision and structured output from an image · X4 and X5: tools and structured output through a tool |
 | [`13-amazon-nova/`](13-amazon-nova/) | nova-micro · nova-lite · nova-pro · nova-2-lite (profile-only) | **runtime** | Converse | Reasoning, tools, structured output through a tool, vision, choosing a tier |
 | [`14-openai-gpt-oss/`](14-openai-gpt-oss/) | gpt-oss 20b/120b · gpt-oss-safeguard 20b/120b | both | Chat Completions · Responses · Converse | Reasoning, tools, structured output, server-side state, Converse · policy classification graded on a labelled set |

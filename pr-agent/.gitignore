@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+*.log
+.DS_Store
+container/work/
+
+# Credentials never belong here. The deploy key and token live in Secrets Manager.
+*.pem
+*.key
+id_ed25519*
+.env
+infra/agent.env

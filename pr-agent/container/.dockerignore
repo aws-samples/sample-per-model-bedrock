@@ -1,0 +1,21 @@
+# Keep the image to what it needs to run. Anything here is either recreated in the
+# image or must never be in it.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+work/
+*.log
+.DS_Store
+
+# Never bake a credential into a layer. The deploy key and token come from Secrets
+# Manager at runtime, so a copy in the image would be an unnecessary second place
+# for one to leak from.
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+.env
+.aws/

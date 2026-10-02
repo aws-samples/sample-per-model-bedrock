@@ -1,0 +1,28 @@
+# What the agent process itself imports. Nothing else belongs here.
+#
+# The security scanners are deliberately NOT in this file. They are command-line tools
+# the agent shells out to, and their dependency graphs collide with the SDK's: semgrep
+# 1.145.0 pins `mcp==1.16.0` while claude-agent-sdk needs `mcp>=1.23.0`, so a single
+# environment holding both is unsatisfiable. See requirements-scanners.txt -- each
+# scanner gets its own virtual environment, which also means a scanner upgrade can
+# never break the agent's runtime.
+#
+# Resolved and hash-pinned into requirements.lock.txt, which is what the image installs:
+#     uv pip compile requirements.txt --python-version 3.13 \
+#         --python-platform aarch64-manylinux2014 --generate-hashes \
+#         --no-header -o requirements.lock.txt
+
+# AgentCore runtime contract: the HTTP server, /invocations and /ping.
+bedrock-agentcore==1.22.0
+
+# Drives the Claude Code CLI. Bedrock is selected with CLAUDE_CODE_USE_BEDROCK=1.
+claude-agent-sdk==0.2.152
+
+# Short-lived bearer tokens for the OpenAI-compatible Bedrock paths.
+aws-bedrock-token-generator==1.1.0
+
+boto3==1.43.89
+botocore==1.43.89
+
+# OpenTelemetry, so spans reach AgentCore Observability rather than being lost.
+aws-opentelemetry-distro==0.14.0

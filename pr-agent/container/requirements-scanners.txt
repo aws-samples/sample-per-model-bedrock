@@ -1,0 +1,32 @@
+# The security gates the agent must clear before it opens a pull request.
+#
+# One `uv tool install` spec per line. Each lands in its own virtual environment with
+# only its command on PATH. That isolation is not tidiness: these tools pin their
+# transitive dependencies hard -- semgrep pins `mcp` to an exact version the Claude
+# Agent SDK cannot use -- so one shared environment is either unsatisfiable or a silent
+# downgrade of something the agent needs. It also means a scanner upgrade can never
+# break the agent's runtime.
+#
+# Versions are pinned because a finding count is only meaningful next to the scanner
+# version that produced it.
+#
+# verify_image.py checks that every command scan_tools.py invokes actually answers, and
+# the build fails if one does not. A scanner that is installed but not on PATH exits 127
+# and its empty output parses as zero findings, which is how a repository passes a gate
+# that never ran.
+
+bandit==1.9.2
+semgrep==1.145.0
+checkov==3.3.16
+
+# ASH is NOT on PyPI. The name `automated-security-helper` there is a squat: an empty
+# placeholder package, four files, no code, `Summary: test-package-placeholder`,
+# published by an unrelated account. Installing it gets you nothing today and whatever
+# that account uploads tomorrow, inside a container that can write to a public AWS
+# repository. Do not "fix" this line by shortening it to a PyPI name.
+#
+# The real tool lives at github.com/awslabs/automated-security-helper. Pinned to the
+# commit v3.7.1 pointed at rather than to the tag, because a tag can be moved and a
+# commit cannot. To bump: read the release notes, then update both the SHA and the
+# comment naming the version it belongs to.
+automated-security-helper @ git+https://github.com/awslabs/automated-security-helper.git@af1206aff596f1288ad066828058b3011de2a998

@@ -68,10 +68,11 @@ and each family notebook:
 - **Model IDs differ per endpoint.** `openai.gpt-oss-20b` on `bedrock-mantle` is
   `openai.gpt-oss-20b-1:0` on `bedrock-runtime`, and many models on `bedrock-runtime`
   (Claude, the hosted GPT models, Grok 4.6 and 4.7, Kimi K3, Nova 2 Lite, Palmyra X4 and
-  X5, Llama 4) are called through an inference profile with a `us.` or `global.` prefix. The
-  wrong ID gives *"The provided model identifier is invalid"* or *"on-demand throughput
-  isn't supported"*, which reads like a missing model. `runtime_id_for()` translates;
-  `endpoints_for()` says which endpoints serve a model at all.
+  X5, Llama 4) are called through an inference profile with a geographic prefix such as
+  `us.` or `in.`, or with a `global.` one. The wrong ID gives *"The provided model
+  identifier is invalid"* or *"on-demand throughput isn't supported"*, which reads like a
+  missing model. `runtime_id_for()` translates; `endpoints_for()` says which endpoints
+  serve a model at all.
 - **So does the URL path.** `bedrock-runtime` serves every OpenAI-compatible model on
   `/openai/v1` and has no `/v1` inference path; on `bedrock-mantle` the prefix depends
   on the model family, and inside the OpenAI family on the product line rather than the

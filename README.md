@@ -107,7 +107,7 @@ Open one folder. Each notebook is self-contained.
 | [`03-google-gemma/`](03-google-gemma/) | gemma-4 31b · 26b-a4b · e2b · gemma-3 4b · 12b · 27b | gemma 4 **mantle** · gemma 3 both | gemma 4 Responses **and** Chat Completions · gemma 3 Chat Completions | Gemma 4: reasoning, tools, structured output, vision · Gemma 3: structured output, vision, sizes, Converse |
 | [`04-qwen/`](04-qwen/) | qwen3 32b/235b/next-80b, coder 30b/480b/next, vl-235b | both · 235b and coder-480b **mantle** | Chat Completions | Reasoning, tools, structured output, Converse · code generation, code review, an agentic coding loop, vision |
 | [`05-deepseek/`](05-deepseek/) | v3.2, v3.1 | v3.2 both · v3.1 **mantle** | Chat Completions | Reasoning, tools, structured output, Converse |
-| [`06-zai-glm/`](06-zai-glm/) | glm-5, glm-4.7, glm-4.7-flash, glm-4.6 | both · 4.6 **mantle** | Chat Completions | Reasoning, tools, structured output, Converse |
+| [`06-zai-glm/`](06-zai-glm/) | glm-5, glm-4.7, glm-4.7-flash, glm-4.6 · glm-5.3 | both · 4.6 **mantle** · 5.3 **runtime** (profile-only) | Chat Completions · 5.3 also Responses | Reasoning, tools, structured output, Converse, GLM 5.3 |
 | [`07-mistral/`](07-mistral/) | mistral-large-3, ministral 3b/8b/14b, magistral, devstral-2, voxtral | both | Chat Completions | Reasoning with Magistral, tools, choosing a size, Converse · Devstral coding agent, Voxtral transcription |
 | [`08-moonshot-kimi/`](08-moonshot-kimi/) | kimi-k2.5, kimi-k2-thinking · kimi-k3 | k2 both · k3 **runtime** (profile-only) | Chat Completions · k3 also Responses | Reasoning, tools, structured output, Converse, Kimi K3 |
 | [`09-minimax/`](09-minimax/) | minimax-m2.5, m2.1, m2 | both | Chat Completions | Reasoning, tools, structured output, Converse |

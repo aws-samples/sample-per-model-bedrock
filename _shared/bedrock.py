@@ -54,6 +54,17 @@ from collections.abc import Sequence
 
 DEFAULT_REGION = "us-east-1"
 
+# Geographic and global inference-profile prefixes, read from
+# ListInferenceProfiles rather than from the User Guide, which lists them as
+# "such as us, eu, apac, in" and omits three that are live. Measured 7 October
+# 2026 across us-east-1, us-west-2, eu-central-1, eu-west-1, ca-central-1,
+# ca-west-1, sa-east-1, ap-south-1, ap-south-2, ap-northeast-1, ap-northeast-2,
+# ap-northeast-3, ap-southeast-1 and ap-southeast-2: us, eu, apac, in, jp, au,
+# ca, global. Each site that strips or recognises a prefix reads this one tuple,
+# so a geography AWS adds is added here and nowhere else.
+GEO_PREFIXES = ("us", "eu", "apac", "in", "jp", "au", "ca", "global")
+_GEO_RE = re.compile(r"^(" + "|".join(GEO_PREFIXES) + r")\.")
+
 # ---------------------------------------------------------------------------
 # URL paths, which are per-endpoint as well as per-model.
 #
@@ -102,7 +113,7 @@ def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
     if endpoint not in ("mantle", "runtime"):
         raise ValueError(f"endpoint must be 'mantle' or 'runtime', got {endpoint!r}")
     # A geo/global inference-profile prefix is not part of the family name.
-    bare = re.sub(r"^(us|eu|apac|in|jp|au|global)\.", "", model_id)
+    bare = _GEO_RE.sub("", model_id)
     if bare.startswith("anthropic."):
         return "/anthropic/v1"
     if endpoint == "runtime":
@@ -232,9 +243,7 @@ def resolve_runtime_id(
     `global.` is tried last: a regional profile keeps traffic in the geography,
     and prompt-cache hits are more likely there than across every Region.
     """
-    # Keep in step with the geo alternation used by api_prefix() and
-    # _norm_model_key().
-    if model_id.split(".", 1)[0] in {"us", "eu", "apac", "in", "jp", "au", "global"}:
+    if model_id.split(".", 1)[0] in GEO_PREFIXES:
         return model_id  # already a profile ID
     profiles = inference_profiles(region)
     candidate = f"{geo}.{model_id}"
@@ -475,7 +484,7 @@ def _norm_model_key(value: str) -> str:
     `claude-sonnet-4-20250514-v1:0` has the date, so its "-4" is kept; `gpt-oss-20b-1:0` has no date, so
     its "-1" goes.
     """
-    value = re.sub(r"^(us|eu|apac|in|jp|au|global)\.", "", value)
+    value = _GEO_RE.sub("", value)
     had_version_suffix = ":" in value
     value = value.split(":")[0]
     # A "-vN" tail IS the version marker, so any digit before it belongs to the model
@@ -569,7 +578,9 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
     `us.anthropic.claude-sonnet-4-6` returns 404 on Messages while
     `us.anthropic.claude-haiku-4-5-20251001-v1:0` returns 200. Use Converse on
     runtime unless you need a Messages-only feature, and probe the model you intend
-    to call.
+    to call. For `anthropic.claude-sonnet-5` the ID this returns was answered by
+    Messages in each of ten Regions measured in October 2026, which is why
+    02-anthropic-claude/01 calls it for that model.
     """
     try:
         catalogue = runtime_models(region)
@@ -592,7 +603,7 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
         # INFERENCE_PROFILE-only: the bare ID is refused outright.
         return resolve_runtime_id(entry["id"], region)
 
-    bare = re.sub(r"^(us|eu|apac|in|jp|au|global)\.", "", model_id)
+    bare = _GEO_RE.sub("", model_id)
 
     # Exact first. Normalisation is lossy by design, so an exact match must win.
     for entry in catalogue.values():

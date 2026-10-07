@@ -102,7 +102,7 @@ def api_prefix(model_id: str, endpoint: str = "mantle") -> str:
     if endpoint not in ("mantle", "runtime"):
         raise ValueError(f"endpoint must be 'mantle' or 'runtime', got {endpoint!r}")
     # A geo/global inference-profile prefix is not part of the family name.
-    bare = re.sub(r"^(us|eu|apac|global|in)\.", "", model_id)
+    bare = re.sub(r"^(us|eu|apac|in|jp|au|global)\.", "", model_id)
     if bare.startswith("anthropic."):
         return "/anthropic/v1"
     if endpoint == "runtime":
@@ -157,8 +157,12 @@ def token(region: str = DEFAULT_REGION) -> str:
 #   Converse(modelId="anthropic.claude-sonnet-5")     -> ValidationException
 #   Converse(modelId="us.anthropic.claude-sonnet-5")  -> 200
 #
-# Verified against us-east-1. resolve_runtime_id() below hides the difference by
-# asking the service which profiles exist rather than guessing at the prefix.
+# Verified against us-east-1. inferenceTypesSupported is per Region, though, so
+# the same model can list ON_DEMAND elsewhere and take its bare ID there: in
+# October 2026 anthropic.claude-sonnet-5 did in ap-northeast-2 and ap-southeast-1,
+# where Bedrock offers it for in-Region inference. resolve_runtime_id() below
+# hides the difference by asking the service what this Region offers rather than
+# guessing from the model.
 # ---------------------------------------------------------------------------
 DEFAULT_GEO = "us"
 
@@ -230,7 +234,7 @@ def resolve_runtime_id(
     """
     # Keep in step with the geo alternation used by api_prefix() and
     # _norm_model_key().
-    if model_id.split(".", 1)[0] in {"us", "eu", "apac", "global", "in"}:
+    if model_id.split(".", 1)[0] in {"us", "eu", "apac", "in", "jp", "au", "global"}:
         return model_id  # already a profile ID
     profiles = inference_profiles(region)
     candidate = f"{geo}.{model_id}"
@@ -471,7 +475,7 @@ def _norm_model_key(value: str) -> str:
     `claude-sonnet-4-20250514-v1:0` has the date, so its "-4" is kept; `gpt-oss-20b-1:0` has no date, so
     its "-1" goes.
     """
-    value = re.sub(r"^(us|eu|apac|global|in)\.", "", value)
+    value = re.sub(r"^(us|eu|apac|in|jp|au|global)\.", "", value)
     had_version_suffix = ":" in value
     value = value.split(":")[0]
     # A "-vN" tail IS the version marker, so any digit before it belongs to the model
@@ -588,7 +592,7 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
         # INFERENCE_PROFILE-only: the bare ID is refused outright.
         return resolve_runtime_id(entry["id"], region)
 
-    bare = re.sub(r"^(us|eu|apac|global|in)\.", "", model_id)
+    bare = re.sub(r"^(us|eu|apac|in|jp|au|global)\.", "", model_id)
 
     # Exact first. Normalisation is lossy by design, so an exact match must win.
     for entry in catalogue.values():

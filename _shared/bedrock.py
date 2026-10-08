@@ -47,6 +47,7 @@ import json
 import os
 import random  # retry jitter only -- never for tokens, keys, or nonces
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -136,15 +137,37 @@ def host(region: str = DEFAULT_REGION) -> str:
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+_TOKEN_TTL = 1800.0  # re-mint well inside the key's <=12h lifetime
+_TOKEN_LOCK = threading.Lock()
+_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+
+
 def token(region: str = DEFAULT_REGION) -> str:
     """Short-term Bedrock API key minted from the ambient IAM credentials.
 
     Expires in <=12h and cannot be refreshed - mint a new one instead.
     00-foundations/01 covers the key lifetime and the SigV4 alternative.
+
+    Cached per Region, because post() asks for a key on every attempt of every
+    call and 99-cross-cutting/01 drives post() from thread pools.
     """
     from aws_bedrock_token_generator import provide_token
 
-    return provide_token(region=region)
+    # provide_token resolves credentials through a new boto3.Session for every
+    # mint. Resolve several of those at once and botocore's provider chain returns
+    # None instead of raising, so provide_token reports "No AWS credentials found"
+    # on a machine whose credentials are fine. Measured in us-east-1 on 8 October
+    # 2026, with credentials from an instance role: 18 sequential mints and 60
+    # sequential resolves all succeeded, while 18 mints across six threads raised
+    # that error in 2 of 5 trials. The lock is held across the mint so that one
+    # thread resolves and the rest wait and take the cached key.
+    with _TOKEN_LOCK:
+        hit = _TOKEN_CACHE.get(region)
+        if hit is not None and time.monotonic() - hit[1] < _TOKEN_TTL:
+            return hit[0]
+        key = provide_token(region=region)
+        _TOKEN_CACHE[region] = (key, time.monotonic())
+        return key
 
 
 # ---------------------------------------------------------------------------

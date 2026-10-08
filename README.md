@@ -68,10 +68,11 @@ and each family notebook:
 - **Model IDs differ per endpoint.** `openai.gpt-oss-20b` on `bedrock-mantle` is
   `openai.gpt-oss-20b-1:0` on `bedrock-runtime`, and many models on `bedrock-runtime`
   (Claude, the hosted GPT models, Grok 4.6 and 4.7, Kimi K3, Nova 2 Lite, Palmyra X4 and
-  X5, Llama 4) are called through an inference profile with a `us.` or `global.` prefix. The
-  wrong ID gives *"The provided model identifier is invalid"* or *"on-demand throughput
-  isn't supported"*, which reads like a missing model. `runtime_id_for()` translates;
-  `endpoints_for()` says which endpoints serve a model at all.
+  X5, Llama 4) are called through an inference profile with a geographic prefix such as
+  `us.` or `in.`, or with a `global.` one. The wrong ID gives *"The provided model
+  identifier is invalid"* or *"on-demand throughput isn't supported"*, which reads like a
+  missing model. `runtime_id_for()` translates; `endpoints_for()` says which endpoints
+  serve a model at all.
 - **So does the URL path.** `bedrock-runtime` serves every OpenAI-compatible model on
   `/openai/v1` and has no `/v1` inference path; on `bedrock-mantle` the prefix depends
   on the model family, and inside the OpenAI family on the product line rather than the
@@ -103,7 +104,7 @@ Open one folder. Each notebook is self-contained.
 | Folder | Models | Endpoint | API | What the notebooks cover |
 |---|---|---|---|---|
 | [`01-openai-gpt/`](01-openai-gpt/) | gpt-6.1 sol · gpt-6 sol/luna/astra · gpt-5.6 sol/terra/luna, gpt-5.5, gpt-5.4 | **both** (runtime: profile-only) · on mantle, gpt-6.1 sol and gpt-6 sol/luna `us-east-1` only, gpt-6-astra `us-east-1` and `us-west-2` | Responses · Chat Completions · Converse | Responses API core, reasoning, vision · web search with citations · tools and structured output · prompt caching · MCP tools, batch inference, fine-tuning |
-| [`02-anthropic-claude/`](02-anthropic-claude/) | sonnet-5, sonnet-5.5, opus-5.5, opus-5, opus-4-8, opus-4-7, haiku-4-5, fable-5, fable-5.1 | fable-5.1 and sonnet-5.5 **runtime** only (sonnet-5.5 through `global.` only) · the rest **both** (runtime: profile-only; mantle: varies by Region) | Messages | Messages API core, vision, token counting · thinking, tool loops, prompt caching · computer use, memory, agent tools |
+| [`02-anthropic-claude/`](02-anthropic-claude/) | sonnet-5, sonnet-5.5, opus-5.5, opus-5, opus-4-8, opus-4-7, haiku-4-5, haiku-5-5, fable-5, fable-5.1 | fable-5.1, sonnet-5.5 and haiku-5.5 **runtime** only (profile-only) · the rest **both** (runtime: profile-only; mantle: varies by Region) | Messages | Messages API core, vision, token counting · thinking, tool loops, prompt caching · computer use, memory, agent tools |
 | [`03-google-gemma/`](03-google-gemma/) | gemma-4 31b · 26b-a4b · e2b · gemma-3 4b · 12b · 27b | gemma 4 **mantle** · gemma 3 both | gemma 4 Responses **and** Chat Completions · gemma 3 Chat Completions | Gemma 4: reasoning, tools, structured output, vision · Gemma 3: structured output, vision, sizes, Converse |
 | [`04-qwen/`](04-qwen/) | qwen3 32b/235b/next-80b, coder 30b/480b/next, vl-235b | both · 235b and coder-480b **mantle** | Chat Completions | Reasoning, tools, structured output, Converse · code generation, code review, an agentic coding loop, vision |
 | [`05-deepseek/`](05-deepseek/) | v3.2, v3.1 | v3.2 both · v3.1 **mantle** | Chat Completions | Reasoning, tools, structured output, Converse |
@@ -123,6 +124,13 @@ The first notebook in each folder starts with a first call, streaming and multi-
 **Treat the Endpoint column as a snapshot.** Models arrive, move between endpoints and
 are retired. Most family notebooks re-check it in their setup cell with
 `endpoints_for()`; for the rest, call it yourself before you depend on a row.
+
+Where a row says profile-only, the prefix that profile carries belongs to the Region and
+not to the model, so resolve it with `runtime_id_for()` rather than writing `us.` or
+`global.` into the model ID. As of October 2026 Claude Sonnet 5.5 answered on both `us.`
+and `global.` in `us-east-1` and on `global.` alone in `ap-northeast-1`;
+[`02-anthropic-claude/01`](02-anthropic-claude/01-messages-api-core.ipynb) measures the
+set per Region.
 
 ## Start with foundations if you are new to Bedrock
 

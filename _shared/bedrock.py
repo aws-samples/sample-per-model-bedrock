@@ -467,7 +467,7 @@ def _norm_model_key(value: str) -> str:
     """Normalise a model ID so the two endpoints' catalogues can be compared.
 
     The same model is named differently on each endpoint, in four ways that all
-    show up in us-east-1 today:
+    show up in us-east-1 as of October 2026:
 
         version suffix     openai.gpt-oss-20b   vs  openai.gpt-oss-20b-1:0
         -v1:0 suffix       qwen.qwen3-32b       vs  qwen.qwen3-32b-v1:0
@@ -488,9 +488,12 @@ def _norm_model_key(value: str) -> str:
     had_version_suffix = ":" in value
     value = value.split(":")[0]
     # A "-vN" tail IS the version marker, so any digit before it belongs to the model
-    # generation. Without this flag, `anthropic.claude-opus-4-7-v1:0` and
-    # `...-4-8-v1:0` would both collapse to `anthropic.claude-opus-4`, and
-    # `zai.glm-5-v1:0` to `zai.glm`.
+    # generation. Without this flag `twelvelabs.marengo-embed-2-7-v1:0` would collapse to
+    # `twelvelabs.marengo-embed-2` and `twelvelabs.pegasus-1-2-v1:0` to
+    # `twelvelabs.pegasus-1`, so endpoints_for("twelvelabs.marengo-embed-2-7") would stop
+    # matching its own catalogue entry and report the model absent from bedrock-runtime.
+    # In us-east-1 as of October 2026, 7 of the 220 IDs ListFoundationModels and
+    # ListInferenceProfiles return normalise differently with this flag than without it.
     had_v_suffix = re.search(r"-v\d+$", value) is not None
     value = re.sub(r"-v\d+$", "", value)
     dated = re.search(r"-\d{8}$", value) is not None

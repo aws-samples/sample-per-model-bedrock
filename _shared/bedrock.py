@@ -488,11 +488,12 @@ def _norm_model_key(value: str) -> str:
     had_version_suffix = ":" in value
     value = value.split(":")[0]
     # A "-vN" tail IS the version marker, so any digit before it belongs to the model
-    # generation. Without this flag an ID shaped like `<family>-4-7-v1:0` would collapse
-    # to `<family>-4` and take `<family>-4-8-v1:0` with it, merging two generations.
-    # The flag guards that shape rather than a model in the catalogue: as of October 2026
-    # no us-east-1 ID normalises differently with it than without it, and the Opus models
-    # are spelled `anthropic.claude-opus-4-7` and `-4-8`, with no version suffix.
+    # generation. Without this flag `twelvelabs.marengo-embed-2-7-v1:0` would collapse to
+    # `twelvelabs.marengo-embed-2` and `twelvelabs.pegasus-1-2-v1:0` to
+    # `twelvelabs.pegasus-1`, so endpoints_for("twelvelabs.marengo-embed-2-7") would stop
+    # matching its own catalogue entry and report the model absent from bedrock-runtime.
+    # In us-east-1 as of October 2026, 7 of the 220 IDs ListFoundationModels and
+    # ListInferenceProfiles return normalise differently with this flag than without it.
     had_v_suffix = re.search(r"-v\d+$", value) is not None
     value = re.sub(r"-v\d+$", "", value)
     dated = re.search(r"-\d{8}$", value) is not None

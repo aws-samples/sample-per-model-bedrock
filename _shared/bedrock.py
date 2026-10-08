@@ -467,7 +467,7 @@ def _norm_model_key(value: str) -> str:
     """Normalise a model ID so the two endpoints' catalogues can be compared.
 
     The same model is named differently on each endpoint, in four ways that all
-    show up in us-east-1 today:
+    show up in us-east-1 as of October 2026:
 
         version suffix     openai.gpt-oss-20b   vs  openai.gpt-oss-20b-1:0
         -v1:0 suffix       qwen.qwen3-32b       vs  qwen.qwen3-32b-v1:0
@@ -488,9 +488,11 @@ def _norm_model_key(value: str) -> str:
     had_version_suffix = ":" in value
     value = value.split(":")[0]
     # A "-vN" tail IS the version marker, so any digit before it belongs to the model
-    # generation. Without this flag, `anthropic.claude-opus-4-7-v1:0` and
-    # `...-4-8-v1:0` would both collapse to `anthropic.claude-opus-4`, and
-    # `zai.glm-5-v1:0` to `zai.glm`.
+    # generation. Without this flag an ID shaped like `<family>-4-7-v1:0` would collapse
+    # to `<family>-4` and take `<family>-4-8-v1:0` with it, merging two generations.
+    # The flag guards that shape rather than a model in the catalogue: as of October 2026
+    # no us-east-1 ID normalises differently with it than without it, and the Opus models
+    # are spelled `anthropic.claude-opus-4-7` and `-4-8`, with no version suffix.
     had_v_suffix = re.search(r"-v\d+$", value) is not None
     value = re.sub(r"-v\d+$", "", value)
     dated = re.search(r"-\d{8}$", value) is not None

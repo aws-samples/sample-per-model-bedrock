@@ -52,7 +52,11 @@ class BatchListPermissionsTest(unittest.TestCase):
             stack.enter_context(contextlib.redirect_stdout(output))
             for index, cell in enumerate(cells):
                 if cell["cell_type"] == "code":
-                    exec(compile("".join(cell["source"]), f"{NOTEBOOK.name}:cell-{index}", "exec"), namespace)
+                    # Execute only this fixed, checked-in notebook, never user-supplied code.
+                    exec(  # nosec B102  # noqa: S102
+                        compile("".join(cell["source"]), f"{NOTEBOOK.name}:cell-{index}", "exec"),
+                        namespace,
+                    )
 
         return namespace, output.getvalue(), requests
 

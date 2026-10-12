@@ -912,13 +912,21 @@ def response_text(payload: dict) -> str:
     return "".join(parts)
 
 
+_MAX_OBJECT_STARTS = 16  # how many "{" parse_json_lenient() will walk from
+
+
 def parse_json_lenient(text: str) -> dict:
     """Parse the first complete JSON object out of model output.
 
     Some models append trailing characters after a well-formed object even in
     "strict" structured-output mode (Gemma 4 does this intermittently). Plain
-    json.loads() then raises even though the useful payload is intact. This walks braces to find the first balanced object and
-    parses that.
+    json.loads() then raises even though the useful payload is intact. This
+    walks braces to find the first balanced object and parses that.
+
+    Every "{" is tried as a start, not only the first, because a model can emit
+    a stray brace ahead of the real object (`{\\n{"invoice_id": ...}`). A walk
+    from the stray one never balances, and the recovery below would then patch
+    text that already holds a complete object.
     """
     text = (text or "").strip()
     if text.startswith("```"):  # strip markdown fences if present
@@ -929,37 +937,51 @@ def parse_json_lenient(text: str) -> dict:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    start = text.find("{")
-    if start == -1:
+    # Walking from every "{" is quadratic in the length of the text, and a model
+    # stuck repeating "{" produces thousands of them, so only the first few are
+    # tried: a stray brace arrives once, not in bulk. Degenerate output then
+    # raises below, promptly, rather than taking the cell with it.
+    starts = [idx for idx, ch in enumerate(text) if ch == "{"][:_MAX_OBJECT_STARTS]
+    if not starts:
         raise ValueError(f"no JSON object found in {len(text)} chars: {text[:300]!r}")
-    depth, in_string, escaped = 0, False, False
-    for idx in range(start, len(text)):
-        ch = text[idx]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return json.loads(text[start : idx + 1])
-    # Unclosed object - some models truncate tool-call arguments mid-object
-    # (qwen3-coder does this reproducibly). Close the open braces and retry
-    # once; that recovers the fields that did arrive.
-    if depth > 0:
-        patched = text[start:] + ('"' if in_string else "") + ("}" * depth)
-        try:
-            return json.loads(patched)
-        except json.JSONDecodeError:
-            pass
+    # Each start is decided completely, balanced parse and then patched parse,
+    # before the next one is tried. Deferring the patched parse would let a
+    # balanced inner object answer ahead of the truncated outer one holding it,
+    # and truncated tool-call arguments nest as a matter of course, because
+    # "arguments" is itself an object.
+    for start in starts:
+        depth, in_string, escaped = 0, False, False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : idx + 1])
+                    except json.JSONDecodeError:
+                        break  # balanced but not JSON; try the next "{"
+        else:
+            # Ran off the end. Some models truncate tool-call arguments
+            # mid-object (qwen3-coder does this reproducibly). Close the open
+            # braces and retry; that recovers the fields that did arrive.
+            if depth > 0:
+                patched = text[start:] + ('"' if in_string else "") + ("}" * depth)
+                try:
+                    return json.loads(patched)
+                except json.JSONDecodeError:
+                    pass
     raise ValueError(
         f"unbalanced JSON after {len(text)} chars: {text[:300]!r}"
         + ("..." if len(text) > 300 else "")

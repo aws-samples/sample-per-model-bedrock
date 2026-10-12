@@ -944,7 +944,11 @@ def parse_json_lenient(text: str) -> dict:
     starts = [idx for idx, ch in enumerate(text) if ch == "{"][:_MAX_OBJECT_STARTS]
     if not starts:
         raise ValueError(f"no JSON object found in {len(text)} chars: {text[:300]!r}")
-    unclosed = []  # candidates that ran off the end, in the order they start
+    # Each start is decided completely, balanced parse and then patched parse,
+    # before the next one is tried. Deferring the patched parse would let a
+    # balanced inner object answer ahead of the truncated outer one holding it,
+    # and truncated tool-call arguments nest as a matter of course, because
+    # "arguments" is itself an object.
     for start in starts:
         depth, in_string, escaped = 0, False, False
         for idx in range(start, len(text)):
@@ -969,18 +973,15 @@ def parse_json_lenient(text: str) -> dict:
                     except json.JSONDecodeError:
                         break  # balanced but not JSON; try the next "{"
         else:
+            # Ran off the end. Some models truncate tool-call arguments
+            # mid-object (qwen3-coder does this reproducibly). Close the open
+            # braces and retry; that recovers the fields that did arrive.
             if depth > 0:
-                unclosed.append((start, depth, in_string))
-    # Unclosed object - some models truncate tool-call arguments mid-object
-    # (qwen3-coder does this reproducibly). Close the open braces and retry;
-    # that recovers the fields that did arrive. Earliest start first, so a
-    # truncated object is preferred over an inner one it contains.
-    for start, depth, in_string in unclosed:
-        patched = text[start:] + ('"' if in_string else "") + ("}" * depth)
-        try:
-            return json.loads(patched)
-        except json.JSONDecodeError:
-            pass
+                patched = text[start:] + ('"' if in_string else "") + ("}" * depth)
+                try:
+                    return json.loads(patched)
+                except json.JSONDecodeError:
+                    pass
     raise ValueError(
         f"unbalanced JSON after {len(text)} chars: {text[:300]!r}"
         + ("..." if len(text) > 300 else "")

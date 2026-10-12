@@ -39,8 +39,16 @@ PARSES = [
     # qwen3-coder truncates tool-call arguments mid-object, and mid-string.
     ('{"sku": "A-100", "quantity": 4', {"sku": "A-100", "quantity": 4}),
     ('{"path": "x.py', {"path": "x.py"}),
-    # A truncated outer object is worth more than the inner one it holds.
+    # A truncated outer object is worth more than the inner one it holds,
+    # including when the inner one is complete and would parse on its own. The
+    # first case alone cannot pin this: its inner object is truncated too, so
+    # there is no balanced inner object to be returned by mistake.
     ('{"a": {"b": 1', {"a": {"b": 1}}),
+    ('{"a": {"b": 1}, "c": 2', {"a": {"b": 1}, "c": 2}),
+    (
+        '{"tool": "search", "args": {"q": "bedrock"}, "id": "call_1',
+        {"tool": "search", "args": {"q": "bedrock"}, "id": "call_1"},
+    ),
     # Both faults at once: a stray brace, and no closing brace either.
     ('Here you go: { {"a": 1', {"a": 1}),
     # Braces inside a string are text, not structure.
@@ -48,9 +56,16 @@ PARSES = [
     ('{"nested": {"b": 1}} junk', {"nested": {"b": 1}}),
 ]
 
-# Output with no recoverable object has to raise rather than return a guess.
-# The last one is a model stuck repeating a token: the walk gives up after
-# _MAX_OBJECT_STARTS starts, so this raises instead of running quadratically.
+# Output with no recoverable object has to raise rather than return a guess,
+# and the error has to be the helper's own ValueError: a json.JSONDecodeError
+# escaping would subclass ValueError and so satisfy a bare `except ValueError`
+# while telling the caller nothing about which text failed.
+#
+# Only the last of these is new behaviour. It is a model stuck repeating a
+# token: the walk gives up after _MAX_OBJECT_STARTS starts, so it raises
+# promptly instead of running quadratically. The first three raise on any
+# version of the helper, and are here so a future change cannot start
+# returning a guess for them.
 RAISES = ["", "no object here at all", "{not json at all}", "{" * 5000]
 
 
@@ -67,9 +82,14 @@ def main() -> int:
     for text in RAISES:
         try:
             got = parse_json_lenient(text)
+        except json.JSONDecodeError as exc:
+            failures.append(f"leaked JSONDecodeError: {exc}  for {text[:40]!r}")
+            continue
         except ValueError:
             continue
-        failures.append(f"returned {got!r} instead of raising ValueError for {text!r}")
+        failures.append(
+            f"returned {got!r} instead of raising ValueError for {text[:40]!r}"
+        )
 
     checks = len(PARSES) + len(RAISES)
     print(f"parse_json_lenient: {checks - len(failures)}/{checks} checks passed")

@@ -118,8 +118,10 @@ Open one folder. Each notebook is self-contained.
 | [`13-amazon-nova/`](13-amazon-nova/) | nova-micro · nova-lite · nova-pro · nova-2-lite (profile-only) | **runtime** | Converse | Reasoning, tools, structured output through a tool, vision, choosing a tier |
 | [`14-openai-gpt-oss/`](14-openai-gpt-oss/) | gpt-oss 20b/120b · gpt-oss-safeguard 20b/120b | both | Chat Completions · Responses · Converse | Reasoning, tools, structured output, server-side state, Converse · policy classification graded on a labelled set |
 | [`15-meta-llama/`](15-meta-llama/) | llama4-scout · llama4-maverick | **runtime** | Converse | Tools, structured output through a tool, vision |
+| [`16-twelvelabs-pegasus/`](16-twelvelabs-pegasus/) | pegasus-1.5 | **runtime** (profile-only) | InvokeModel · InvokeModelWithResponseStream | Video understanding: questions about a video, structured output, text on screen, time-coded segments |
 
-The first notebook in each folder starts with a first call, streaming and multi-turn.
+The first notebook in each folder starts with a first call, streaming and multi-turn,
+except Pegasus, whose request takes one prompt and one video and has no conversation.
 
 **Treat the Endpoint column as a snapshot.** Models arrive, move between endpoints and
 are retired. Most family notebooks re-check it in their setup cell with
@@ -183,7 +185,7 @@ in its final cell; `99-cross-cutting/03` creates a guardrail and deletes it.
 
 In scope: documented public APIs of Amazon Bedrock serverless inference on both the
 `bedrock-runtime` and `bedrock-mantle` endpoints, for models that **return text**,
-across text, image and audio inputs. Out of scope: image, video, speech and embedding
+across text, image, audio and video inputs. Out of scope: image, video, speech and embedding
 outputs, rerankers, Bedrock Marketplace, and models the provider has retired.
 
 Vision and audio cells need an input, so three small files are committed under
@@ -191,6 +193,12 @@ Vision and audio cells need an input, so three small files are committed under
 speech clip, both excerpted from a public AWS talk, and a synthetic invoice. Each
 gives its cell a known answer, so the cell can check what the model returned.
 Provenance is in [`_shared/bedrock.py`](_shared/bedrock.py).
+
+The Pegasus notebook needs a video, which is not committed. It downloads *Sparks*, a
+short film from [Netflix Open Content](https://opencontent.netflix.com/) released under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), into
+`~/.cache/sample-per-model-bedrock/` the first time it runs. The encode it uses is video-only,
+with no audio track.
 
 Model behaviour on Bedrock changes without notice: a parameter accepted today can be
 rejected tomorrow. Notes about what a model accepts are dated and quote the error

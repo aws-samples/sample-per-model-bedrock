@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import unittest
 from unittest.mock import patch
 
@@ -64,7 +65,13 @@ class BatchListPermissionsTest(unittest.TestCase):
         self.assertEqual(requests, ["/v1/models", "/openai/v1/batches", "/v1/files", "/v1/fine_tuning/jobs"])
         self.assertEqual(namespace["bad"], {})
         self.assertIn("format problems: none", output)
-        self.assertIn("hedged    score=0.0", output)
+        self.assertIn("hedged number want=0.0 got=0.0 ok", output)
+        # The reward cell's own verdict over its cases, read from the printed summary so
+        # that adding a case does not need a new assertion here.
+        scored = re.search(r"cases scored as intended: (\d+) of (\d+)", output)
+        self.assertIsNotNone(scored, f"the reward cell printed no scoring summary: {output!r}")
+        self.assertEqual(scored.group(1), scored.group(2))
+        self.assertGreater(int(scored.group(2)), 0)
 
     def test_denied_batch_listing_continues_through_training_and_reward_cells(self):
         namespace, output, requests = self.run_notebook(status=403)

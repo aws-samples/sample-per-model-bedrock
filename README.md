@@ -197,7 +197,8 @@ Provenance is in [`_shared/bedrock.py`](_shared/bedrock.py).
 The Pegasus notebook needs a video, which is not committed. It downloads *Sparks*, a
 short film from [Netflix Open Content](https://opencontent.netflix.com/) released under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), into
-`~/.cache/sample-per-model-bedrock/` the first time it runs.
+`~/.cache/sample-per-model-bedrock/` the first time it runs. The encode it uses is video-only,
+with no audio track.
 
 Model behaviour on Bedrock changes without notice: a parameter accepted today can be
 rejected tomorrow. Notes about what a model accepts are dated and quote the error

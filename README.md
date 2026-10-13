@@ -118,7 +118,7 @@ Open one folder. Each notebook is self-contained.
 | [`13-amazon-nova/`](13-amazon-nova/) | nova-micro · nova-lite · nova-pro · nova-2-lite (profile-only) | **runtime** | Converse | Reasoning, tools, structured output through a tool, vision, choosing a tier |
 | [`14-openai-gpt-oss/`](14-openai-gpt-oss/) | gpt-oss 20b/120b · gpt-oss-safeguard 20b/120b | both | Chat Completions · Responses · Converse | Reasoning, tools, structured output, server-side state, Converse · policy classification graded on a labelled set |
 | [`15-meta-llama/`](15-meta-llama/) | llama4-scout · llama4-maverick | **runtime** | Converse | Tools, structured output through a tool, vision |
-| [`16-twelvelabs-pegasus/`](16-twelvelabs-pegasus/) | pegasus-1.5 | **runtime** (profile-only) | InvokeModel | Video understanding: questions about a video, structured output, time-coded segments |
+| [`16-twelvelabs-pegasus/`](16-twelvelabs-pegasus/) | pegasus-1.5 | **runtime** (profile-only) | InvokeModel · InvokeModelWithResponseStream | Video understanding: questions about a video, structured output, text on screen, time-coded segments |
 
 The first notebook in each folder starts with a first call, streaming and multi-turn,
 except Pegasus, whose request takes one prompt and one video and has no conversation.

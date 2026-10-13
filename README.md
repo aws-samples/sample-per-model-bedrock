@@ -89,7 +89,11 @@ IAM: `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` cover
 key, as the OpenAI and Anthropic SDKs do, also needs `bedrock:CallWithBearerToken` on
 `bedrock-runtime` and `bedrock-mantle:CallWithBearerToken` on `bedrock-mantle`.
 Discovery cells also need `bedrock:ListFoundationModels` and
-`bedrock:ListInferenceProfiles`. The Responses API on `bedrock-runtime`, used by the
+`bedrock:ListInferenceProfiles`. Listing batch jobs, in
+[`01-openai-gpt/05`](01-openai-gpt/05-server-side-tools-and-fine-tuning.ipynb), needs
+`bedrock:ListModelInvocationJobs` on the calling identity, and creating and managing a
+job needs `bedrock:CreateModelInvocationJob`, `bedrock:GetModelInvocationJob` and
+`bedrock:StopModelInvocationJob`. The Responses API on `bedrock-runtime`, used by the
 hosted GPT models and Grok 4.6 and 4.7, is authorised against the inference profile, the
 foundation model in each Region the profile routes to, and the account's default project
 (`arn:aws:bedrock:{region}:{account-id}:project/default`), so allow

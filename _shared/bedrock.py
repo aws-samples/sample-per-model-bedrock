@@ -16,7 +16,8 @@ APIs:
                       Helpers: runtime_id_for(), runtime_models().
     bedrock-mantle    Responses / Chat Completions / Messages. Adds server-side
                       tool use, asynchronous inference (background=true), and
-                      Projects and Workspaces. Helpers: post(), list_models().
+                      Projects and Workspaces. Helpers: post(), list_models(),
+                      list_model_entries().
 
 Which endpoint serves a given model is a per-model fact, not a preference, and
 so is the URL path and even the model ID — the same model can be
@@ -411,8 +412,8 @@ _RUNTIME_CATALOGUE_CACHE: dict[str, dict[str, dict]] = {}
 # Remembers a FAILED catalogue call, so it is attempted once per Region rather than
 # once per lookup.
 _RUNTIME_CATALOGUE_FAILED: dict[str, str] = {}
-# The same pair for the bedrock-mantle catalogue, used by list_models().
-_MANTLE_CATALOGUE_CACHE: dict[str, list[str]] = {}
+# The same pair for the bedrock-mantle catalogue, used by list_model_entries().
+_MANTLE_CATALOGUE_CACHE: dict[str, list[dict]] = {}
 _MANTLE_CATALOGUE_FAILED: dict[str, str] = {}
 
 
@@ -864,8 +865,8 @@ def err(payload: dict, limit: int = 160) -> str:
 # ---------------------------------------------------------------------------
 # Small conveniences used across notebooks
 # ---------------------------------------------------------------------------
-def list_models(region: str = DEFAULT_REGION) -> list[str]:
-    """Model inventory on bedrock-mantle, which is the endpoint that serves one.
+def list_model_entries(region: str = DEFAULT_REGION) -> list[dict]:
+    """Catalogue entries on bedrock-mantle, which is the endpoint that serves one.
 
     `GET /v1/models` here, and GET-only: a POST to it is 405. `/openai/v1/models`
     is 404 on mantle, and bedrock-runtime serves neither path, so this helper is
@@ -876,6 +877,12 @@ def list_models(region: str = DEFAULT_REGION) -> list[str]:
     Pointed at runtime, the GET below gets 404 and raises. A POST with no body
     would instead get HTTP 200 and a Coral SerializationException, which reads as
     a Region with no models, so keep `method="GET"`.
+
+    Each entry carries more than its `id`. `status` is `available` or not, with a
+    `status_reason` when it is not, and `data_retention.allowed_modes` says which
+    retention modes the model can be called under. A listed model is not
+    necessarily a callable one, so read `status` when the answer matters
+    (00-foundations/02-governance-projects-and-retention.ipynb).
 
     Cached per Region: a setup cell that calls endpoints_for() for eight models makes
     one catalogue call. A refusal such as 403 is cached too, so it is not repeated per
@@ -891,8 +898,20 @@ def list_models(region: str = DEFAULT_REGION) -> list[str]:
             if not _is_retryable(code, payload if isinstance(payload, dict) else {}):
                 _MANTLE_CATALOGUE_FAILED[region] = message
             raise RuntimeError(message)
-        _MANTLE_CATALOGUE_CACHE[region] = sorted(m["id"] for m in payload.get("data", []))
-    return list(_MANTLE_CATALOGUE_CACHE[region])
+        _MANTLE_CATALOGUE_CACHE[region] = sorted(
+            payload.get("data", []), key=lambda m: m["id"]
+        )
+    # Copies, so a caller that sorts the list or edits an entry cannot disturb the cache.
+    return [dict(entry) for entry in _MANTLE_CATALOGUE_CACHE[region]]
+
+
+def list_models(region: str = DEFAULT_REGION) -> list[str]:
+    """Model IDs from the bedrock-mantle catalogue in one Region, sorted.
+
+    A presence check wants this. A count of what can be called wants
+    list_model_entries(), because a listed model is not always a callable one.
+    """
+    return [m["id"] for m in list_model_entries(region)]
 
 
 def response_text(payload: dict) -> str:

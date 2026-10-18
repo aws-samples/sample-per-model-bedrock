@@ -125,6 +125,23 @@ class EndpointAvailabilityTest(unittest.TestCase):
             self.assertEqual(bedrock.list_model_entries()[0]["status"], "available")
             post.assert_called_once_with("/v1/models", None, region="us-east-1", method="GET")
 
+    def test_nested_retention_edits_do_not_disturb_cached_entries(self):
+        entries = [{
+            "id": "a", "status": "available",
+            "data_retention": {"mode": "default", "allowed_modes": ["default"]},
+        }]
+        with patch.object(bedrock, "post", return_value=(200, {"data": entries})) as post:
+            result = bedrock.list_model_entries()
+            result[0]["data_retention"]["allowed_modes"].append("poison")
+            result[0]["data_retention"]["mode"] = "changed"
+            fresh = bedrock.list_model_entries()
+            self.assertEqual(fresh[0]["data_retention"], {
+                "mode": "default", "allowed_modes": ["default"],
+            })
+            fresh[0]["data_retention"]["allowed_modes"] = ["replaced"]
+            self.assertEqual(bedrock.list_model_entries()[0]["data_retention"]["allowed_modes"], ["default"])
+            post.assert_called_once_with("/v1/models", None, region="us-east-1", method="GET")
+
     def test_permanent_failures_are_cached_but_transient_failures_retry(self):
         with patch.object(bedrock, "post", return_value=(403, {"message": "denied"})) as post:
             for _ in range(2):

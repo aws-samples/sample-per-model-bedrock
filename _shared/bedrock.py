@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import copy
 import json
 import os
 import random  # retry jitter only -- never for tokens, keys, or nonces
@@ -924,8 +925,10 @@ def list_model_entries(region: str = DEFAULT_REGION) -> list[dict]:
         _MANTLE_CATALOGUE_CACHE[region] = sorted(
             payload.get("data", []), key=lambda m: m["id"]
         )
-    # Copies, so a caller that sorts the list or edits an entry cannot disturb the cache.
-    return [dict(entry) for entry in _MANTLE_CATALOGUE_CACHE[region]]
+    # Deep copies, so a caller that sorts the list or edits an entry, including the
+    # nested data_retention block, cannot disturb the cache. A dict() copy would leave
+    # data_retention shared, and that is the block a caller reaches into.
+    return [copy.deepcopy(entry) for entry in _MANTLE_CATALOGUE_CACHE[region]]
 
 
 def list_models(region: str = DEFAULT_REGION) -> list[str]:

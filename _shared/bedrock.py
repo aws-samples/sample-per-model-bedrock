@@ -45,6 +45,8 @@ from __future__ import annotations
 import ast
 import base64
 import copy
+import email.message  # the type urllib hands back as HTTPError.headers
+import email.utils  # Retry-After in its HTTP-date form
 import json
 import os
 import random  # retry jitter only -- never for tokens, keys, or nonces
@@ -663,6 +665,35 @@ _TRANSIENT = {429, 500, 502, 503, 504, 529}
 _SERVER_FAULT_TEXT = ("internal server error", "internal failure", "internal error")
 
 
+# The Bedrock user guide asks callers to honour Retry-After when a retryable
+# response carries it, rather than using their own schedule. The ceiling is the one
+# the OpenAI SDK applies to the same header: past it, a single header could hold a
+# notebook cell open for minutes, so the backoff takes over and the caller retries
+# sooner than asked.
+_RETRY_AFTER_MAX = 60.0
+
+
+def _retry_after_seconds(headers: email.message.Message | None) -> float | None:
+    """Seconds to wait from a Retry-After header, or None when it says nothing usable.
+
+    Reads both forms HTTP allows: delta-seconds, and an HTTP date. urllib puts the
+    response headers on the HTTPError itself, so a raw-HTTP caller can read them in
+    the except branch; the mapping is case-insensitive.
+    """
+    raw = headers.get("Retry-After") if headers is not None else None
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        pass
+    # parsedate_tz returns None rather than raising on anything it cannot read.
+    parsed = email.utils.parsedate_tz(raw)
+    if parsed is None:
+        return None
+    return email.utils.mktime_tz(parsed) - time.time()
+
+
 def _is_retryable(status: int, payload: dict) -> bool:
     """True when this response is worth another attempt."""
     if status in _TRANSIENT:
@@ -718,6 +749,9 @@ def post(
     RPM quota and sheds load under regional pressure. Also retries a 4xx whose body
     reports an internal server error - see _is_retryable. A genuine client error
     (unsupported parameter, unknown model) still fails on the first attempt.
+
+    A retryable response that carries Retry-After sets the wait instead of the
+    backoff, up to _RETRY_AFTER_MAX seconds - see _retry_after_seconds.
     """
     url = host(region) + path
     data = json.dumps(body).encode() if body is not None else None
@@ -740,10 +774,13 @@ def post(
             except json.JSONDecodeError:
                 parsed = {"raw": raw[:500]}
             if _is_retryable(e.code, parsed) and attempt < attempts - 1:
-                # Retry jitter, not a security decision.
-                time.sleep(
-                    min(2**attempt, 16) + random.random()  # nosec B311  # noqa: S311
-                )
+                wait = min(2**attempt, 16)
+                after = _retry_after_seconds(e.headers)
+                if after is not None and 0 < after <= _RETRY_AFTER_MAX:
+                    wait = after
+                # Jitter on top either way, so clients shed together do not all
+                # return at the same moment. Retry jitter, not a security decision.
+                time.sleep(wait + random.random())  # nosec B311  # noqa: S311
                 continue
             return e.code, parsed
         except Exception as e:  # timeouts, connection resets

@@ -48,6 +48,11 @@ class RetryAfterSecondsTest(unittest.TestCase):
             self.assertIsNone(bedrock._retry_after_seconds(headers(value)), value)
         self.assertIsNone(bedrock._retry_after_seconds(None))
 
+    def test_non_finite_is_nothing_usable(self):
+        # float() reads all five, so each one reached a caller as a float before.
+        for value in ("nan", "NaN", "inf", "-inf", "Infinity"):
+            self.assertIsNone(bedrock._retry_after_seconds(headers(value)), value)
+
 
 class PostHonoursRetryAfterTest(unittest.TestCase):
     """post() waits what the header names, and falls back to its backoff otherwise."""
@@ -86,6 +91,10 @@ class PostHonoursRetryAfterTest(unittest.TestCase):
         self.assertEqual(self.waited(429, "0"), 1.0)
         self.assertEqual(self.waited(429, "-5"), 1.0)
 
+    def test_non_finite_uses_the_backoff(self):
+        self.assertEqual(self.waited(429, "nan"), 1.0)
+        self.assertEqual(self.waited(503, "inf"), 1.0)
+
 
 class NotebookCopyAgreesTest(unittest.TestCase):
     """The hardening notebook teaches the same policy, so run its cell, not a paraphrase."""
@@ -111,6 +120,7 @@ class NotebookCopyAgreesTest(unittest.TestCase):
         for value, expected in (("7", 7.0), (when, 12.0), (None, backoff),
                                 ("soon", backoff), ("600", backoff),
                                 ("0", backoff), ("-5", backoff),
+                                ("nan", backoff), ("inf", backoff),
                                 ("Tue, 20 Oct 99999 00:00:00 GMT", backoff)):
             got = retry_delay(3, headers(value)) if value is not None else retry_delay(3)
             # retry_delay adds its jitter inside, so compare against [expected, expected+1).

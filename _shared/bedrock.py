@@ -48,6 +48,7 @@ import copy
 import email.message  # the type urllib hands back as HTTPError.headers
 import email.utils  # Retry-After in its HTTP-date form
 import json
+import math  # isfinite, to reject a nan or inf Retry-After
 import os
 import random  # retry jitter only -- never for tokens, keys, or nonces
 import re
@@ -684,18 +685,21 @@ def _retry_after_seconds(headers: email.message.Message | None) -> float | None:
     if raw is None:
         return None
     try:
-        return float(raw)
+        after = float(raw)
     except (TypeError, ValueError):
-        pass
-    # parsedate_tz returns None rather than raising on anything it cannot read, but
-    # mktime_tz does raise on a date it can read and cannot represent, such as year 99999.
-    parsed = email.utils.parsedate_tz(raw)
-    if parsed is None:
-        return None
-    try:
-        return email.utils.mktime_tz(parsed) - time.time()
-    except (ValueError, OverflowError):
-        return None
+        # parsedate_tz returns None rather than raising on anything it cannot read, but
+        # mktime_tz does raise on a date it can read and cannot represent, such as year 99999.
+        parsed = email.utils.parsedate_tz(raw)
+        if parsed is None:
+            return None
+        try:
+            after = email.utils.mktime_tz(parsed) - time.time()
+        except (ValueError, OverflowError):
+            return None
+    # float() reads "nan", "inf" and "-inf", and none of the three is a wait. nan also
+    # fails every comparison, so a caller guarding with 0 < after would read it as "no
+    # header" while a caller comparing the other way would sleep on it.
+    return after if math.isfinite(after) else None
 
 
 def _is_retryable(status: int, payload: dict) -> bool:

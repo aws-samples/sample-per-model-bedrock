@@ -42,7 +42,9 @@ class RetryAfterSecondsTest(unittest.TestCase):
         self.assertEqual(bedrock._retry_after_seconds(headers("9", name="retry-after")), 9.0)
 
     def test_nothing_usable(self):
-        for value in (None, "soon", ""):
+        # The last one parses as a date and cannot be represented as a timestamp, so it
+        # reaches mktime_tz rather than failing in parsedate_tz like the others.
+        for value in (None, "soon", "", "Tue, 20 Oct 99999 00:00:00 GMT"):
             self.assertIsNone(bedrock._retry_after_seconds(headers(value)), value)
         self.assertIsNone(bedrock._retry_after_seconds(None))
 
@@ -108,7 +110,8 @@ class NotebookCopyAgreesTest(unittest.TestCase):
         backoff = min(2 ** 3, 16)
         for value, expected in (("7", 7.0), (when, 12.0), (None, backoff),
                                 ("soon", backoff), ("600", backoff),
-                                ("0", backoff), ("-5", backoff)):
+                                ("0", backoff), ("-5", backoff),
+                                ("Tue, 20 Oct 99999 00:00:00 GMT", backoff)):
             got = retry_delay(3, headers(value)) if value is not None else retry_delay(3)
             # retry_delay adds its jitter inside, so compare against [expected, expected+1).
             self.assertGreaterEqual(got, expected - 2, value)

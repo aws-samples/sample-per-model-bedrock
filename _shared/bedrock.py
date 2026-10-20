@@ -687,11 +687,15 @@ def _retry_after_seconds(headers: email.message.Message | None) -> float | None:
         return float(raw)
     except (TypeError, ValueError):
         pass
-    # parsedate_tz returns None rather than raising on anything it cannot read.
+    # parsedate_tz returns None rather than raising on anything it cannot read, but
+    # mktime_tz does raise on a date it can read and cannot represent, such as year 99999.
     parsed = email.utils.parsedate_tz(raw)
     if parsed is None:
         return None
-    return email.utils.mktime_tz(parsed) - time.time()
+    try:
+        return email.utils.mktime_tz(parsed) - time.time()
+    except (ValueError, OverflowError):
+        return None
 
 
 def _is_retryable(status: int, payload: dict) -> bool:

@@ -555,10 +555,33 @@ def endpoints_for(model_id: str, region: str = DEFAULT_REGION) -> dict[str, bool
     Ask this before writing code against a model. The same model can carry
     DIFFERENT IDs on the two endpoints - `openai.gpt-oss-120b` on mantle is
     `openai.gpt-oss-120b-1:0` on runtime - so this compares on a normalised key.
+    Mantle also requires catalogue status `available` for this account in this
+    Region. This is discovery, not a probe of inference permissions or API support.
+    Catalogue results are cached per Region; restart the kernel after changing
+    the account's retention mode to discover its new availability.
     """
     target = _norm_model_key(model_id)
     try:
-        on_mantle = any(_norm_model_key(m) == target for m in list_models(region))
+        entries = [
+            entry for entry in list_model_entries(region)
+            if _norm_model_key(entry["id"]) == target
+        ]
+        on_mantle = any(entry.get("status") == "available" for entry in entries)
+        if entries and not on_mantle:
+            entry = entries[0]
+            retention = entry.get("data_retention")
+            retention = retention if isinstance(retention, dict) else {}
+            reason = (entry.get("status_reason") or "no reason reported").rstrip(".")
+            _warn_once(
+                f"mantle_status:{target}:{region}",
+                f"{model_id} is in the bedrock-mantle catalogue in {region} with "
+                f"status {entry.get('status')!r} for this account: "
+                f"{reason}. "
+                f"Retention mode: {retention.get('mode', 'not reported')!r}; "
+                f"allowed modes: {retention.get('allowed_modes', 'not reported')!r}. "
+                "The 'mantle' answer below is False for that reason, "
+                "NOT because the model is absent.",
+            )
     except Exception as exc:
         _warn_once(
             f"list_models:{region}",

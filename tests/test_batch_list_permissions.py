@@ -34,8 +34,6 @@ class BatchListPermissionsTest(unittest.TestCase):
                 if status != 200:
                     return httpx.Response(status, json={"error": {"message": "private caller details"}})
                 data = jobs or []
-            elif request.url.path == "/v1/models":
-                data = [{"id": "openai.gpt-oss-20b"}, {"id": "qwen.qwen3-32b"}]
             elif request.url.path in ("/v1/files", "/v1/fine_tuning/jobs"):
                 data = []
             else:
@@ -62,7 +60,7 @@ class BatchListPermissionsTest(unittest.TestCase):
         return namespace, output.getvalue(), requests
 
     def assert_following_cells_ran(self, namespace, output, requests):
-        self.assertEqual(requests, ["/v1/models", "/openai/v1/batches", "/v1/files", "/v1/fine_tuning/jobs"])
+        self.assertEqual(requests, ["/openai/v1/batches", "/v1/files", "/v1/fine_tuning/jobs"])
         self.assertEqual(namespace["bad"], {})
         self.assertIn("format problems: none", output)
         self.assertIn("hedged number want=0.0 got=0.0 ok", output)

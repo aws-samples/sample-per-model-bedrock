@@ -312,12 +312,14 @@ def resolve_runtime_id(
 # --------------------------------------------------------------------------
 # Sample media.
 #
-# Vision and audio cells need an input with a known answer, so each cell can
-# check what the model returned:
+# Vision cells need an input with a known answer, so the cell can check what
+# the model returned. The ground truth below covers those two; the clip is here
+# for the shape of the request rather than for a scored answer, because an
+# `input_audio` part is refused where 07-mistral/02 measured it (section 5):
 #
 #     slide    ->  a labelled architecture diagram, for "read the title" and
 #                  "quote the callouts"
-#     clip     ->  seven seconds of speech, for "transcribe this"
+#     clip     ->  seven seconds of speech, for an `input_audio` part
 #     invoice  ->  a rendered invoice holding the same fields as the text
 #                  extraction examples, for "extract this image as JSON"
 #
@@ -345,18 +347,6 @@ SLIDE_CALLOUTS = (
     "Lower compute cost, up to 90%",
     "Lower storage cost for rarely accessed data",
 )
-
-# Ground truth for the clip, transcribed by hand from the audio itself. The
-# speaker says this at 4:19 in the recording above.
-CLIP_TRANSCRIPT = (
-    "you can save cost by leveraging the tiering mechanism in Amazon S3, "
-    "in Amazon S3 you can store your infrequently accessed data"
-)
-# Score transcription on these rather than on an exact match. Speech recognition
-# legitimately differs on word boundaries and filler words, and "tiering" is
-# sometimes returned as "tearing", so an exact-match assertion would fail on a
-# correct transcript.
-CLIP_KEYWORDS = ("save cost", "leveraging", "Amazon S3")
 
 # Ground truth for the invoice: the fields it was rendered from.
 INVOICE_FIELDS = {"invoice_id": "INV-1042", "vendor": "Acme Pty Ltd", "total": 1280.5, "currency": "AUD"}

@@ -618,13 +618,28 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
 
     This answers for Converse, InvokeModel and the /openai/v1 paths. The
     /anthropic/v1/messages surface on bedrock-runtime serves a smaller set of Claude
-    models, and no ID shape predicts which: as of September 2026,
-    `us.anthropic.claude-sonnet-4-6` returns 404 on Messages while
-    `us.anthropic.claude-haiku-4-5-20251001-v1:0` returns 200. Use Converse on
-    runtime unless you need a Messages-only feature, and probe the model you intend
-    to call. For `anthropic.claude-sonnet-5` the ID this returns was answered by
-    Messages in each of ten Regions measured in October 2026, which is why
-    02-anthropic-claude/01 calls it for that model.
+    models, and no ID shape predicts which. Of the fifteen Claude entries in the
+    us-east-1 runtime catalogue on 31 October 2026, eleven answered 200 on Messages
+    and four returned 404 not_found_error, "The model doesn't exist or doesn't
+    support this API. Retry your request with a different model ID.":
+    `us.anthropic.claude-opus-4-1-20250805-v1:0`,
+    `us.anthropic.claude-opus-4-5-20251101-v1:0`, `us.anthropic.claude-opus-4-6-v1`
+    and `us.anthropic.claude-sonnet-4-5-20250929-v1:0`. The same-shaped
+    `us.anthropic.claude-haiku-4-5-20251001-v1:0` answered 200, as did
+    `us.anthropic.claude-sonnet-4-6` and `us.anthropic.claude-sonnet-5`, and each of
+    the four answered Converse in that same run, so it is the API rather than the
+    endpoint that does not serve them. Use Converse on runtime unless you need a
+    Messages-only feature, and probe the model you intend to call. For
+    `anthropic.claude-sonnet-5` the ID this returns was answered by Messages in each
+    of ten Regions measured in October 2026, which is why 02-anthropic-claude/01
+    calls it for that model.
+
+    The ID form matters there as much as the model, and it mirrors between the
+    endpoints: on bedrock-runtime a bare mantle ID returns 400 "Invocation of model
+    ID ... with on-demand throughput isn’t supported" and a profile form without the
+    version suffix returns 400 "The provided model identifier is invalid.", while on
+    bedrock-mantle the bare IDs answer and the profile form returns 404 "The model
+    '...' does not exist" (02-anthropic-claude/01 section 7).
     """
     try:
         catalogue = runtime_models(region)

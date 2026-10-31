@@ -628,8 +628,19 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
     `us.anthropic.claude-haiku-4-5-20251001-v1:0` answered 200, as did
     `us.anthropic.claude-sonnet-4-6` and `us.anthropic.claude-sonnet-5`, and each of
     the four answered Converse in that same run, so it is the API rather than the
-    endpoint that does not serve them. Use Converse on runtime unless you need a
-    Messages-only feature, and probe the model you intend to call. For
+    endpoint that does not serve them.
+
+    Each model card answers this per model, in its "APIs supported on
+    bedrock-runtime endpoint" table, so read the card before you probe
+    (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html lists
+    them): the Opus 4.1, Opus 4.5, Opus 4.6 and Sonnet 4.5 cards all mark Messages
+    unsupported there, matching their 404s above, while the Haiku 4.5 and Sonnet 5
+    cards mark it supported. Probe anyway, because the card and the service can
+    disagree. All fifteen cards were read on 31 October 2026 and checked against
+    that run: fourteen agreed and one did not, the Sonnet 4.6 card, which marks
+    bedrock-runtime Messages unsupported while `us.anthropic.claude-sonnet-4-6`
+    answered 200 'Canberra'. Use Converse on runtime unless you need a
+    Messages-only feature. For
     `anthropic.claude-sonnet-5` the ID this returns was answered by Messages in each
     of ten Regions measured in October 2026, which is why 02-anthropic-claude/01
     calls it for that model.

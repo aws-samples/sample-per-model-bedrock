@@ -618,13 +618,55 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
 
     This answers for Converse, InvokeModel and the /openai/v1 paths. The
     /anthropic/v1/messages surface on bedrock-runtime serves a smaller set of Claude
-    models, and no ID shape predicts which: as of September 2026,
-    `us.anthropic.claude-sonnet-4-6` returns 404 on Messages while
-    `us.anthropic.claude-haiku-4-5-20251001-v1:0` returns 200. Use Converse on
-    runtime unless you need a Messages-only feature, and probe the model you intend
-    to call. For `anthropic.claude-sonnet-5` the ID this returns was answered by
-    Messages in each of ten Regions measured in October 2026, which is why
+    models, and no ID shape predicts which. Of the fifteen Claude entries in the
+    us-east-1 runtime catalogue on 31 October 2026, eleven answered 200 on Messages
+    and four returned 404 not_found_error, "The model doesn't exist or doesn't
+    support this API. Retry your request with a different model ID.":
+    `us.anthropic.claude-opus-4-1-20250805-v1:0`,
+    `us.anthropic.claude-opus-4-5-20251101-v1:0`, `us.anthropic.claude-opus-4-6-v1`
+    and `us.anthropic.claude-sonnet-4-5-20250929-v1:0`. The same-shaped
+    `us.anthropic.claude-haiku-4-5-20251001-v1:0` answered 200, as did
+    `us.anthropic.claude-sonnet-4-6` and `us.anthropic.claude-sonnet-5`. Opus 4.5,
+    Opus 4.6 and Sonnet 4.5 answered Converse on that same endpoint in the same
+    run, so for those three it is the API rather than the endpoint that does not
+    serve Messages.
+
+    Check the lifecycle before you read a 404 as missing API support, because the
+    error does not tell the two apart. Opus 4.1 answered nothing in that run:
+    Converse and InvokeModel both returned ResourceNotFoundException "Access
+    denied. This Model is marked by provider as Legacy and you have not been
+    actively using the model in the last 30 days. Please upgrade to an active model
+    on Amazon Bedrock", while its Messages 404 carried the same generic
+    not_found_error as the other three. GetFoundationModel reports this in
+    `modelLifecycle`: status LEGACY, legacyTime 2026-07-08,
+    publicExtendedAccessTime 2026-10-08, endOfLifeTime 2027-01-08. So its 404 says
+    nothing either way about Messages coverage. Sonnet 4.5 is Legacy too, its
+    public extended access starting 2027-01-08, so it answers today and may stop:
+    https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle-legacy.html
+
+    Each model card answers this per model, in its "APIs supported on
+    bedrock-runtime endpoint" table, so read the card before you probe
+    (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html lists
+    them): the Opus 4.1, Opus 4.5, Opus 4.6 and Sonnet 4.5 cards all mark Messages
+    unsupported there, matching their 404s above, while the Haiku 4.5 and Sonnet 5
+    cards mark it supported. Probe anyway, because the card and the service can
+    disagree. Of the fifteen cards on 31 October 2026, checked against that same
+    run, fourteen agreed and one did not: the Sonnet 4.6 card marks bedrock-runtime
+    Messages unsupported while `us.anthropic.claude-sonnet-4-6` answered 200
+    'Canberra'. Opus 4.1 is one of the fourteen, but its agreement confirms
+    nothing, because the lockout above left its Messages support unmeasured. Use
+    Converse on runtime unless you need a Messages-only feature.
+
+    For `anthropic.claude-sonnet-5` the ID this returns was answered by Messages
+    in each of ten Regions measured in October 2026, which is why
     02-anthropic-claude/01 calls it for that model.
+
+    The ID form matters there as much as the model, and it mirrors between the
+    endpoints: on bedrock-runtime a bare mantle ID returns 400 "Invocation of model
+    ID ... with on-demand throughput isn’t supported" and a profile form without the
+    version suffix returns 400 "The provided model identifier is invalid.", while on
+    bedrock-mantle the bare IDs answer and the profile form returns 404 "The model
+    '...' does not exist" (02-anthropic-claude/01 section 7).
     """
     try:
         catalogue = runtime_models(region)

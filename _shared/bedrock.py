@@ -385,20 +385,31 @@ def clip_mp3_b64() -> str:
     return base64.b64encode(clip_mp3()).decode()
 
 
+# `*`, backtick and `~` carry no meaning inside a quoted phrase, so they come out.
+# `_` does carry meaning in snake_case, so it comes out only where it is not between
+# word characters, which is where a model used it as emphasis.
+_EMPHASIS = re.compile(r"[*`~]+|(?<![0-9A-Za-z])_+|_+(?![0-9A-Za-z])")
+
+
+def _plain(text: str) -> str:
+    """Lowercased, markdown emphasis removed, whitespace collapsed."""
+    return " ".join(_EMPHASIS.sub("", (text or "").lower()).split())
+
+
 def keyword_recall(answer: str, keywords: Sequence[str]) -> tuple[int, int]:
     """How many of `keywords` appear in `answer`, case-insensitively.
 
     Returned as (hits, total) so a cell can print a score it computed rather
     than assert a verdict written in advance.
 
-    Whitespace is collapsed on both sides before matching. Without that, a model
-    that emits a double space or a non-breaking space inside an otherwise
-    correct phrase scores zero, while the same cell's `" ".join(answer.split())`
-    display normalises it and looks correct. That mismatch reads as a broken
-    model rather than a formatting difference.
+    Whitespace is collapsed and markdown emphasis is removed on both sides
+    before matching. Without that, a model that bolds two words inside an
+    otherwise exact quote, or emits a double space, scores a miss while the
+    same cell prints that quote right above the score. That mismatch reads as a
+    broken model rather than a formatting difference.
     """
-    lowered = " ".join((answer or "").lower().split())
-    hits = sum(1 for word in keywords if " ".join(word.lower().split()) in lowered)
+    lowered = _plain(answer)
+    hits = sum(1 for word in keywords if _plain(word) in lowered)
     return hits, len(keywords)
 
 

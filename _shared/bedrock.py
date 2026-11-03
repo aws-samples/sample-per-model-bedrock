@@ -387,7 +387,8 @@ def clip_mp3_b64() -> str:
 
 # `*`, backtick and `~` carry no meaning inside a quoted phrase, so they come out.
 # `_` does carry meaning in snake_case, so it comes out only where it is not between
-# word characters, which is where a model used it as emphasis.
+# word characters, which is where a model used it as emphasis. That includes the
+# `__bold__` form, whose inner `_` is itself not a word character, so both come out.
 _EMPHASIS = re.compile(r"[*`~]+|(?<![0-9A-Za-z])_+|_+(?![0-9A-Za-z])")
 
 

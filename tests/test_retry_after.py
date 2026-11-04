@@ -7,6 +7,7 @@ No AWS credentials, token generation, model calls, or cloud resources are used.
 import email.message
 import email.utils
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -97,28 +98,45 @@ class PostHonoursRetryAfterTest(unittest.TestCase):
 
 
 class NotebookCopyAgreesTest(unittest.TestCase):
-    """The hardening notebook teaches the same policy, so run its cell, not a paraphrase."""
+    """The hardening notebook teaches this policy, so run its cell, not a paraphrase.
 
-    def retry_delay(self):
+    Its copy differs from post() in exactly one case, on purpose: a Retry-After above the
+    ceiling is capped there and falls back to the backoff here. The notebook's helper is
+    the one a reader copies into a client, and the backoff tops out below the ceiling, so
+    dropping a long header would retry sooner than the service asked. Every other case
+    has to agree, and both sides have to read the same ceiling.
+    """
+
+    def cell_namespace(self):
         cells = json.loads(NOTEBOOK.read_text())["cells"]
         sources = ["".join(c["source"]) for c in cells if c["cell_type"] == "code"]
         defining = [s for s in sources if "def retry_delay(" in s]
         self.assertEqual(len(defining), 1, "retry_delay is defined in exactly one cell")
-        namespace = {"email": email, "time": time, "random": __import__("random")}
+        namespace = {"email": email, "math": math, "time": time, "random": __import__("random")}
         # The point of the test is to run the committed cell rather than a copy of it,
         # so that the notebook cannot drift from the shared loop unnoticed. The source
         # is a file in this repository, not input.
         exec(  # nosec B102  # noqa: S102
             compile(defining[0], f"{NOTEBOOK.name}:retry_delay", "exec"), namespace
         )
-        return namespace["retry_delay"]
+        return namespace
 
-    def test_same_decisions_as_the_shared_loop(self):
+    def retry_delay(self):
+        return self.cell_namespace()["retry_delay"]
+
+    def test_the_ceiling_is_the_shared_one(self):
+        # The cap and the fallback are two policies over one number. If either side moves
+        # it, the notebook's prose and the shared loop's comment stop describing the same
+        # ceiling, so pin them together.
+        self.assertEqual(self.cell_namespace()["RETRY_AFTER_MAX"], bedrock._RETRY_AFTER_MAX)
+
+    def test_decisions_agree_apart_from_the_cap(self):
         retry_delay = self.retry_delay()
         when = email.utils.formatdate(time.time() + 12, usegmt=True)
         backoff = min(2 ** 3, 16)
+        ceiling = bedrock._RETRY_AFTER_MAX
         for value, expected in (("7", 7.0), (when, 12.0), (None, backoff),
-                                ("soon", backoff), ("600", backoff),
+                                ("soon", backoff), ("600", ceiling),
                                 ("0", backoff), ("-5", backoff),
                                 ("nan", backoff), ("inf", backoff),
                                 ("Tue, 20 Oct 99999 00:00:00 GMT", backoff)):

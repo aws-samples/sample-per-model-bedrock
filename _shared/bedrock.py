@@ -314,8 +314,11 @@ def resolve_runtime_id(
 #
 # Vision cells need an input with a known answer, so the cell can check what
 # the model returned. The ground truth below covers those two; the clip is here
-# for the shape of the request rather than for a scored answer, because an
-# `input_audio` part is refused where 07-mistral/02 measured it (section 5):
+# for the shape of the request rather than for a scored answer, because the
+# repository holds no transcript of it. Whether an `input_audio` part is taken
+# at all goes by model: 07-mistral/02 (section 5) measures a refusal on both
+# Voxtral models, and 03-google-gemma/01 (Things that differ) measures Gemma 4
+# E2B taking the part and transcribing the clip:
 #
 #     slide    ->  a labelled architecture diagram, for "read the title" and
 #                  "quote the callouts"

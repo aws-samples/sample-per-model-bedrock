@@ -727,12 +727,16 @@ def runtime_id_for(model_id: str, region: str = DEFAULT_REGION) -> str | None:
 # only knows 500-504 gives up on a retryable blip.
 _TRANSIENT = {429, 500, 502, 503, 504, 529}
 
-# mantle sometimes reports a SERVER fault with a 4xx status and the body
-# "Internal server error", and the same request succeeds on the next attempt.
-# Status alone misclassifies it as a permanent client error.
+# A SERVER fault reported with a 4xx status and the body "Internal server error"
+# is read as a permanent client error by status alone, so this reads the body too.
+# Defended against rather than measured: 40 identical POSTs to
+# /openai/v1/responses in us-east-1 on 17 November 2026 returned HTTP 200, 40 of
+# 40, and the 4xx bodies seen there carried "type": "invalid_request_error" and
+# no server-fault text (99-cross-cutting/03-production-hardening.ipynb, section 2).
 #
 # So: retry a 4xx ONLY when the body says the server failed. Never widen this to
-# all 400s: a genuine "unsupported parameter" 400 must fail fast.
+# all 400s: a genuine parameter fault, such as the 400 for "Invalid
+# 'max_output_tokens'", must fail fast.
 _SERVER_FAULT_TEXT = ("internal server error", "internal failure", "internal error")
 
 

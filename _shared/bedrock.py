@@ -739,6 +739,20 @@ _TRANSIENT = {429, 500, 502, 503, 504, 529}
 # 'max_output_tokens'", must fail fast.
 _SERVER_FAULT_TEXT = ("internal server error", "internal failure", "internal error")
 
+# mantle names the fault class in error.type, and on a 4xx that naming outranks the
+# text search above: an error message can quote what the caller sent, so a marker
+# found in it says nothing about the server. Measured in US East (N. Virginia) on
+# 17 November 2026: POST /openai/v1/responses with the model ID
+# "google.gemma-4-31b-internal error" returned 404 with "type":
+# "invalid_request_error" and the ID echoed into the message, and
+# POST /anthropic/v1/messages with a role of "captain internal error" returned 400
+# with "type": "invalid_request_error" and that role echoed into the message. The
+# same bad-model fault on the /anthropic path is typed "not_found_error" rather
+# than "invalid_request_error", so both vocabularies are listed. A 4xx whose type
+# is absent or unrecognised still falls through to the text search, and a 429 is
+# transient before any of this.
+_CLIENT_FAULT_TYPES = ("invalid_request_error", "not_found_error")
+
 
 # The Bedrock user guide asks callers to honour Retry-After when a retryable
 # response carries it, rather than using their own schedule. The ceiling is the one
@@ -781,6 +795,12 @@ def _is_retryable(status: int, payload: dict) -> bool:
     if status in _TRANSIENT:
         return True
     if 400 <= status < 500:
+        # A fault class the service names wins, because the text search below reads
+        # the caller's own strings too - see _CLIENT_FAULT_TYPES. The guard is here
+        # because post() hands on whatever json.loads returned, which can be a list.
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict) and str(error.get("type", "")).lower() in _CLIENT_FAULT_TYPES:
+            return False
         # Match over the WHOLE serialised body, not err()'s extracted message.
         # err() reads error.message and truncates, which misses a marker in a
         # sibling field ({"message": "Bad request", "details": "internal server
@@ -830,7 +850,9 @@ def post(
     Retries 429 and 5xx with exponential backoff + jitter, because mantle has no
     RPM quota and sheds load under regional pressure. Also retries a 4xx whose body
     reports an internal server error - see _is_retryable. A genuine client error
-    (unsupported parameter, unknown model) still fails on the first attempt.
+    (a parameter out of range, an unknown model) still fails on the first attempt,
+    including one whose message quotes a caller string that reads like a server
+    fault, because the fault class in error.type is read before the body text.
 
     A retryable response that carries Retry-After sets the wait instead of the
     backoff, up to _RETRY_AFTER_MAX seconds - see _retry_after_seconds.
